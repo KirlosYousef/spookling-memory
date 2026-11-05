@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpHome } from './helpers.mjs';
 import { CloudError, createCloud } from '../src/cloud.js';
 import { readCredentials, writeCredentials } from '../src/credentials.js';
 import { tokens } from '../src/account.js';
 import { skippedSessionIds, teamMemoryHook, uploadProblems } from '../src/push.js';
+import { readCache, refresh, teamSession, writeCache } from '../src/team.js';
 import { main } from '../src/main.js';
 import { status } from '../src/wizard.js';
 
@@ -104,6 +105,50 @@ test('details.reason survives in a CloudError', async () => {
   const fetchImpl = async () => new Response(JSON.stringify({ success: false, error: { code: 'FORBIDDEN', message: 'x', details: { reason: 'org_owned' } } }), { status: 403 });
   const cloud = createCloud({ env: { SPOOKLING_API_URL: 'https://api.t.test' }, home: homeOf(), token: 'spk_x', fetchImpl });
   await assert.rejects(cloud.upsertSession({ sid: 's', session: {} }), (e) => e.status === 403 && e.reason === 'org_owned');
+});
+
+const sess = (id, extra = {}) => ({ id, clientId: id.split(':')[1], owner: { id: 'u2', name: 'Ada' }, title: id, project: 'p', lastTurnAt: '2026-11-03T09:00:00Z', turnCount: 1, sharedWith: ['o1'], ...extra });
+
+async function refreshWith(truncated) {
+  const home = homeOf();
+  writeCredentials({ token: 't', user: { name: 'Ada' }, apiUrl: 'https://api.t.test' }, { home });
+  writeCache({
+    orgs: { o1: { name: 'Acme', serverTime: '2026-11-02T00:00:00Z', sharedIds: ['u2:keep', 'u2:old'], ownSharedIds: [] } },
+    sessions: {
+      k: { orgId: 'o1', orgName: 'Acme', session: sess('u2:keep'), turns: [{ seq: 0, role: 'user', text: 'k', ts: 't' }] },
+      o: { orgId: 'o1', orgName: 'Acme', session: sess('u2:old'), turns: [{ seq: 0, role: 'user', text: 'o', ts: 't' }] },
+    },
+  }, home);
+  const cloud = {
+    listOrgs: async () => ({ orgs: [{ org: { id: 'o1', name: 'Acme' }, membership: { status: 'active' } }] }),
+    feed: async () => ({ sessions: [], sharedIds: ['u2:keep'], sharedIdsTruncated: truncated, serverTime: '2026-11-03T00:00:00Z', nextCursor: null }),
+    getSession: async ({ sid }) => ({ session: sess(sid), turns: [{ seq: 0, role: 'user', text: 'x', ts: 't' }], nextAfter: null }),
+  };
+  await refresh({ home, env: {}, cloud, write: () => {} });
+  return Object.values(readCache(home).sessions).map((e) => e.session.id).sort();
+}
+
+test('refresh purges unshared sessions, but not when the feed says sharedIds was truncated', async () => {
+  assert.deepEqual(await refreshWith(false), ['u2:keep']);
+  assert.deepEqual(await refreshWith(true), ['u2:keep', 'u2:old']);
+});
+
+test('team_session reads pages of at most 100 and follows nextAfter', async () => {
+  const home = homeOf();
+  writeCredentials({ token: 't', user: { name: 'Ada' }, apiUrl: 'https://api.t.test' }, { home });
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(new URL(url));
+    const after = Number(new URL(url).searchParams.get('after') ?? -1);
+    const turns = after < 0 ? [{ seq: 0, role: 'user', text: 'first page', ts: 't' }] : [{ seq: 100, role: 'user', text: 'second page', ts: 't' }];
+    return new Response(JSON.stringify({ success: true, data: { session: sess('u2:big'), turns, nextAfter: after < 0 ? 99 : null } }), { status: 200 });
+  };
+  const cloud = createCloud({ env: {}, home, fetchImpl });
+  const cache = { orgs: { o1: { name: 'Acme', serverTime: null, sharedIds: [], ownSharedIds: [] } }, sessions: { x: { orgId: 'o1', orgName: 'Acme', session: sess('u2:big'), turns: null } }, apiBase: null };
+  const text = await teamSession({ sessionId: 'u2:big', home, env: {}, cache, cloud, writeBack: false, refreshFirst: false });
+  assert.match(text, /first page/);
+  assert.match(text, /second page/);
+  assert.deepEqual(urls.map((u) => [u.searchParams.get('limit'), u.searchParams.get('after')]), [['100', null], ['100', '99']]);
 });
 
 const row = (id, extra = {}) => ({ id, label: 'laptop', createdAt: '2026-11-01T10:00:00Z', lastUsedAt: '2026-11-03T12:30:00Z', current: false, ...extra });

@@ -10,6 +10,7 @@ import { tmpHome } from './helpers.mjs';
 import { compareVersions, cachedNotice, isSemver, latestVersion, updateAvailable } from '../src/registry.js';
 import { update } from '../src/update.js';
 import { main } from '../src/main.js';
+import { whoami } from '../src/account.js';
 import { TAGGERS, VERSION, detectInstall, serverVersion, status, stopOldServers } from '../src/wizard.js';
 import {
   addHooks, addMcp, addStatusLine, claudeDesktopConfigPath, codexHandlers, codexHooksPath, hookHandlers, mcpEntry, mcpPath, settingsPath,
@@ -190,19 +191,20 @@ test('a failed check is remembered for the day and never throws', async () => {
   assert.equal(asked, 1);
 });
 
-test('status prints the update line; the daily check is cached', async () => {
+test('status prints the update line; whoami prints it at most once a day, from the cache', async () => {
   const home = tmp();
   const said = [];
   const w = process.stdout.write;
   process.stdout.write = (s) => { said.push(String(s)); return true; };
   try { await status(home, async () => null, home, { update: { env: {}, fetchImpl: registry('0.2.1') } }); } finally { process.stdout.write = w; }
   assert.match(said.join('').replace(/\x1b\[[0-9;]*m/g, ''), /! update   0\.2\.1 is available\. Run spookling update\./);
-  // the cache is now warm: the line shows once a day
+  // the cache is now warm; whoami reads it and shows the line once
   const t = Date.now();
   assert.equal(cachedNotice({ home, current: VERSION === '0.2.1' ? '0.2.0' : VERSION, env: {}, now: () => t }), '0.2.1');
   assert.equal(cachedNotice({ home, current: '0.2.0', env: {}, now: () => t + 3600_000 }), null, 'not again within a day');
   assert.equal(cachedNotice({ home, current: '0.2.0', env: {}, now: () => t + 25 * 3600_000 }), '0.2.1');
   assert.equal(cachedNotice({ home, current: '0.2.0', env: { SPOOKLING_NO_UPDATE_CHECK: '1' }, now: () => t + 99 * 3600_000 }), null);
+  void whoami;
 });
 
 test('status: the upgrade line points at spookling update, or npx for a wiring from before 0.2.0', async () => {
@@ -219,7 +221,7 @@ test('an old server is stopped only when its command line says it is ours, and t
   const project = join(home, 'work');
   mkdirSync(join(project, '.memory'), { recursive: true });
   const ours = (v) => `uv run --project ${home}/.spookling-memory/${v}/server spookling-memory serve --folder .memory --port 7447`;
-  assert.equal(serverVersion(ours('0.1.2')), '0.1.2');
+  assert.equal(serverVersion(ours('0.1.3')), '0.1.3');
   assert.equal(serverVersion('node /tmp/other.js serve'), null);
   const run = async (command) => {
     writeFileSync(join(project, '.memory', 'server.pid'), `${process.pid}\n`);
@@ -230,7 +232,7 @@ test('an old server is stopped only when its command line says it is ours, and t
     await stopOldServers(ctx);
     return { stopped, ctx };
   };
-  let r = await run(ours('0.1.2'));
+  let r = await run(ours('0.1.3'));
   assert.deepEqual(r.stopped, [process.pid]);
   assert.equal(r.ctx.serverHome, project);
   assert.equal(r.ctx.auto.start, true);
