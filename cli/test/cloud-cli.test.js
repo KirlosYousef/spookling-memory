@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpHome } from './helpers.mjs';
 import { writeCredentials } from '../src/credentials.js';
@@ -9,6 +9,7 @@ import { orgs } from '../src/account.js';
 import { main } from '../src/main.js';
 import { pendingUploads, projectLog } from '../src/push.js';
 import { status } from '../src/wizard.js';
+import { writeCache, emptyCache } from '../src/team.js';
 
 const homeOf = () => tmpHome('spk-cc-');
 const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -31,9 +32,13 @@ test('status: logged out says so', async () => {
   assert.match(line, /not logged in/);
 });
 
-test('status: email and pending turns come from local files', async () => {
+test('status: email, last sync and pending turns come from local files', async () => {
   const home = homeOf();
   writeCredentials({ token: 'spk_x', user: { email: 'ada@example.com', name: 'Ada' } }, { home });
+  const cache = emptyCache();
+  cache.orgs = { o1: { name: 'One', serverTime: '2026-11-02T10:00:00Z', sharedIds: [], ownSharedIds: [] },
+    o2: { name: 'Two', serverTime: '2026-11-03T11:30:00Z', sharedIds: [], ownSharedIds: [] } };
+  writeCache(cache, home);
   writeFileSync(join(home, '.spookling', 'upload-state.json'), JSON.stringify({
     cursors: {}, skipped: {}, shares: [],
     queue: [{ sid: 'a', session: {}, turns: [{ seq: 0 }, { seq: 1 }] }, { sid: 'b', session: {}, turns: [{ seq: 0 }] }],
@@ -41,18 +46,19 @@ test('status: email and pending turns come from local files', async () => {
   assert.deepEqual(pendingUploads(home), { sessions: 2, turns: 3 });
   const line = cloudLine(await statusText(home));
   assert.match(line, /logged in as ada@example\.com/);
+  assert.match(line, /last sync 2026-11-03T11:30:00Z/);
   assert.match(line, /3 turns in 2 sessions not uploaded yet/);
   assert.doesNotMatch(line, /spk_x/);
 });
 
-test('status: logged in with nothing queued; never touches the network', async () => {
+test('status: logged in with nothing synced or queued; never touches the network', async () => {
   const home = homeOf();
   writeCredentials({ token: 'spk_x', user: { name: 'Ada' } }, { home });
   const real = globalThis.fetch;
   globalThis.fetch = () => { throw new Error('status must not use the network'); };
   let line;
   try { line = cloudLine(await statusText(home)); } finally { globalThis.fetch = real; }
-  assert.match(line, /logged in as Ada; no turns waiting/);
+  assert.match(line, /logged in as Ada; last sync never; no turns waiting/);
 });
 
 

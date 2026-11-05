@@ -6,9 +6,10 @@ import http from 'node:http';
 import { join } from 'node:path';
 import { readCredentials, writeCredentials } from '../src/credentials.js';
 import { createCloud, DEFAULT_API_URL } from '../src/cloud.js';
-import { login, logout, orgs, whoami } from '../src/account.js';
+import { login, logout, whoami } from '../src/account.js';
 import { teamMemoryHook } from '../src/push.js';
 import { install, linkCli, status } from '../src/wizard.js';
+import { refresh } from '../src/team.js';
 import { tmpHome, listen, envelope, readReq, waitFor, runHook, ROOT, modeOf, projectWithLog, hookEnv } from './helpers.mjs';
 
 const homeOf = () => tmpHome('spk-cli-');
@@ -37,6 +38,8 @@ test('init copies the uploader next to the hooks', async () => {
   assert.equal(existsSync(join(to, 'hooks', 'stop.js')), true);
   assert.equal(existsSync(join(to, 'hooks', 'upload-session.cjs')), true);
   assert.equal(existsSync(join(to, 'hooks', 'lib', 'push.js')), true);
+  assert.equal(existsSync(join(to, 'hooks', 'lib', 'team.js')), true);
+  assert.equal(existsSync(join(to, 'hooks', 'lib', 'team-invoke.js')), true);
   assert.equal(JSON.parse(readFileSync(join(to, 'hooks', 'lib', 'package.json'), 'utf8')).type, 'module');
   const home = homeOf();
   writeCredentials({ token: 'spk_copied', user: { name: 'Ada' } }, { home });
@@ -151,7 +154,7 @@ test('upload with no saved URL uses the default API and does not throw', async (
   assert.match(out, /Ada/);
 });
 
-test('logout and orgs use saved apiUrl when the env var is unset', async () => {
+test('logout and refresh use saved apiUrl when the env var is unset', async () => {
   const seen = [];
   const server = await memoryApi(seen);
   const { port } = server.address();
@@ -167,9 +170,10 @@ test('logout and orgs use saved apiUrl when the env var is unset', async () => {
     assert.equal(readCredentials({ home, env: {} }).token, null);
     assert.equal(readCredentials({ home, env: {} }).apiUrl, api);
     writeCredentials({ token: 'spk_refresh_url', user: { name: 'Ada' }, apiUrl: api }, { home });
-    let orgsOut = '';
-    await orgs({ home, env: {}, write: (s) => { orgsOut += s; } });
-    assert.match(orgsOut, /not in an org/);
+    let refreshOut = '';
+    const refreshed = await refresh({ home, env: {}, write: (s) => { refreshOut += s; } });
+    assert.equal(refreshed, 1);
+    assert.match(refreshOut, /You are not in an org/);
     assert.equal(seen.includes('/cli/orgs'), true);
   } finally {
     await new Promise((resolve) => server.close(resolve));

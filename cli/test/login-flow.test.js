@@ -1,13 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpHome } from './helpers.mjs';
 import { CloudError, isNetworkError, networkMessage } from '../src/cloud.js';
 import { readCredentials, writeCredentials } from '../src/credentials.js';
 import { login, logout, orgs, whoami } from '../src/account.js';
+import { setProjectAutoShare, setSessionShare, shareStatus } from '../src/share.js';
+import { refresh } from '../src/team.js';
+import { formatShare, main } from '../src/main.js';
 
 const BIN = fileURLToPath(new URL('../../bin/spookling-memory.js', import.meta.url));
 const homeOf = () => tmpHome('spk-lf-');
@@ -203,7 +206,7 @@ test('whoami prints name, email, API and default org; logged out exits 1', () =>
   assert.match(out, /Default org Acme\n$/);
 });
 
-test('logout and orgs say the API is unreachable', async () => {
+test('logout, orgs, refresh and share say the API is unreachable', async () => {
   const home = homeOf();
   writeCredentials({ token: 't', user: { name: 'Ada' } }, { home });
   const cloud = new Proxy({}, { get: () => async () => { throw down('TypeError'); } });
@@ -211,9 +214,46 @@ test('logout and orgs say the API is unreachable', async () => {
   const write = (s) => { out += s; };
   assert.equal(await orgs({ home, env: {}, cloud, write }), 1);
   assert.match(out.trim(), UNREACHABLE);
+  out = '';
+  assert.equal(await refresh({ home, env: {}, cloud, write }), 1);
+  assert.match(out, /Couldn't reach https:\/\/api\.spookling\.com\. Check your connection, or SPOOKLING_API_URL if you set it\. Kept the previous cache\./);
   const notes = [];
   await logout({ home, env: {}, cloud, log: (m) => notes.push(m), write });
   assert.match(notes[0], /Couldn't reach .* The saved token was still removed\./);
+  writeCredentials({ token: 't', user: { name: 'Ada' } }, { home });
+  for (const call of [() => shareStatus({ env: {}, home, cloud }), () => setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud }),
+    () => setProjectAutoShare({ project: 'p', enabled: true, env: {}, home, cloud })]) {
+    assert.match((await call()).error, UNREACHABLE);
+  }
+});
+
+test('--org defaults to the saved default org for share and autoshare on', async () => {
+  const home = homeOf();
+  writeCredentials({ token: 't', user: { name: 'Ada' }, apiUrl: 'https://api.test' }, { home });
+  const two = [ORG('o1', 'Acme'), ORG('o2', 'Beta')];
+  const shared = [], rules = [];
+  const cloud = {
+    listOrgs: async () => ({ orgs: two }),
+    shareSession: async ({ sid, orgId }) => { shared.push(`${sid}>${orgId}`); },
+    unshareSession: async ({ sid, orgId }) => { shared.push(`un ${sid}>${orgId}`); },
+    setAutoShare: async ({ project, orgId }) => { rules.push(`${project}>${orgId}`); },
+    listSessions: async () => ({ sessions: [{ clientId: 's', project: 'p', sharedWith: ['o1', 'o2'] }] }),
+    listAutoShare: async () => ({ rules: [] }),
+  };
+  const noDefault = await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud });
+  assert.match(noDefault.error, /Which org\? Acme, Beta\./);
+  const { setDefaultOrg } = await import('../src/credentials.js');
+  setDefaultOrg({ id: 'o2', name: 'Beta' }, { home });
+  await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud });
+  await setProjectAutoShare({ project: 'p', enabled: true, env: {}, home, cloud });
+  assert.deepEqual([shared[0], rules[0]], ['s>o2', 'p>o2']);
+  await setSessionShare({ sessionId: 's', share: true, org: 'Acme', env: {}, home, cloud });
+  assert.equal(shared[1], 's>o1', 'an explicit --org wins');
+  shared.length = 0;
+  await setSessionShare({ sessionId: 's', share: false, env: {}, home, cloud });
+  assert.deepEqual(shared.sort(), ['un s>o1', 'un s>o2'], 'unshare without --org still covers every org');
+  setDefaultOrg({ id: 'gone', name: 'Gone' }, { home });
+  assert.match((await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud })).error, /Which org\?/, 'a stale default is ignored');
 });
 
 const capture = async (fn) => {
@@ -235,4 +275,28 @@ test('unknown command: message on stderr, help, exit 1; bare, help, -h, --help e
     assert.equal(ok.stderr, '');
     assert.match(ok.stdout, /spookling init/);
   }
+});
+
+const sessions = (n) => Array.from({ length: n }, (_, i) => ({
+  sessionId: `s${i + 1}`, visibility: 'private', sharedWith: [], project: 'p', title: i === 0 ? 'x'.repeat(100) : `title ${i + 1}`,
+}));
+
+test('sessions: newest 20, a footer, --limit, --all, titles cut at 80', async () => {
+  const deps = (n) => ({ home: homeOf(), cwd: homeOf(), exit: () => {}, share: { status: async () => ({ sessions: sessions(n), autoShare: [] }) } });
+  let r = await capture(async () => ({ code: await main(['node', 'spookling', 'sessions'], deps(43)) }));
+  const lines = r.out.trim().split('\n');
+  assert.equal(r.code, 0);
+  assert.equal(lines.length, 21);
+  assert.equal(lines[20], 'Showing 20 of 43. spookling sessions --all for all.');
+  assert.ok(lines[0].endsWith(`${'x'.repeat(79)}…`), lines[0]);
+  r = await capture(async () => ({ code: await main(['node', 'spookling', 'sessions', '--all'], deps(43)) }));
+  assert.equal(r.out.trim().split('\n').length, 43);
+  assert.doesNotMatch(r.out, /Showing/);
+  r = await capture(async () => ({ code: await main(['node', 'spookling', 'sessions', 'p', '--limit', '5'], deps(43)) }));
+  assert.equal(r.out.trim().split('\n').length, 6);
+  assert.match(r.out, /Showing 5 of 43/);
+  r = await capture(async () => ({ code: await main(['node', 'spookling', 'sessions', '--limit=0'], deps(3)) }));
+  assert.equal(r.code, 2);
+  assert.match(r.err, /--limit takes a whole number/);
+  assert.equal(formatShare({ sessions: sessions(3), autoShare: [] }).split('\n').length, 3, 'under the limit: no footer');
 });

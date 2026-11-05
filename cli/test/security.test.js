@@ -10,7 +10,7 @@ import {
 import { tmpHome } from './helpers.mjs';
 import { readCredentials, setDefaultOrg, writeCredentials, writeFileSecure } from '../src/credentials.js';
 import { login, openerCommand, orgs, safeVerificationUri, whoami } from '../src/account.js';
-import { main } from '../src/main.js';
+import { formatShare, main } from '../src/main.js';
 
 const homeOf = () => tmpHome('spk-sec-');
 const ok = (data) => new Response(JSON.stringify({ success: true, data }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -211,4 +211,8 @@ test('control characters are stripped from server text, newlines stay', async ()
   await orgs({ home, env: {}, write: (s) => { out += s; },
     cloud: { listOrgs: async () => ({ orgs: [{ org: { id: 'o\x1b1', name: 'Acme\x1b]0;pwn\x07' }, membership: { status: 'active' } }] }) } });
   assert.equal(out, 'o1  Acme]0;pwn\n');
+  const text = formatShare({ sessions: [{ sessionId: 's1', visibility: 'private', sharedWith: [], project: 'p\x1b[1m', title: 'T\x1b[2Jitle' }],
+    autoShare: [{ project: 'x\x07', org: 'O\x1b' }] });
+  assert.equal(/[\x00-\x09\x0b-\x1f\x7f]/.test(text), false, JSON.stringify(text));
+  assert.match(text, /p\[1m  T\[2Jitle/);
 });

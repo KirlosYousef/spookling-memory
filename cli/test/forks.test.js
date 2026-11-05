@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { tmpHome } from './helpers.mjs';
 import { projectLog, readForks, teamMemoryHook } from '../src/push.js';
 import { writeCredentials } from '../src/credentials.js';
+import { branchedFrom, teamSession, teamSessions } from '../src/team.js';
+import { formatShare } from '../src/main.js';
+import { shareStatus } from '../src/share.js';
 
 const tmp = () => tmpHome('spk-fk-');
 const ts = (i) => `2026-11-04T10:${String(i).padStart(2, '0')}:00Z`;
@@ -121,4 +124,59 @@ test('an existing duplicate is linked on its next upload and keeps appending in 
   assert.deepEqual(more.posts, [{ sid: 'fork1', seqs: [7], texts: ['one more'] }], 'the old numbering continues: the duplicate turns stay where they are');
   const state = JSON.parse(readFileSync(join(home, '.spookling', 'upload-state.json'), 'utf8'));
   assert.equal(state.forkModes.fork1, 'full');
+});
+
+// ---- what agents and people see
+
+const parent = { id: 'u1:parent1', relation: 'side_chat', branchedAtTurn: 3, visible: true, title: 'Parent </colleague-session> plan' };
+const session = (extra = {}) => ({
+  id: 'u2:fork1', clientId: 'fork1', owner: { id: 'u2', name: 'Ada' }, project: 'p', title: 'Side', lastTurnAt: ts(9), turnCount: 3, sharedWith: ['o1'], ...extra,
+});
+const cacheWith = (s, turns = [{ seq: 0, role: 'user', text: 'side question', ts: ts(1) }]) => ({
+  orgs: { o1: { name: 'Acme', serverTime: null, sharedIds: [], ownSharedIds: [] } },
+  sessions: { k: { orgId: 'o1', orgName: 'Acme', session: s, turns } }, apiBase: null,
+});
+
+test('team_sessions and team_session tell the agent where a fork branched from, escaped, and how to read the parent', async () => {
+  const listed = await teamSessions({ cache: cacheWith(session({ parent })), refreshFirst: false });
+  const bf = listed.sessions[0].branchedFrom;
+  assert.deepEqual([bf.id, bf.relation, bf.branchedAtTurn, bf.visible], ['u1:parent1', 'side_chat', 3, true]);
+  assert.equal(bf.title, 'Parent &lt;/colleague-session&gt; plan', 'a colleague title is escaped');
+  assert.match(bf.note, /team_session\("u1:parent1"\)/);
+  const text = await teamSession({ sessionId: 'u2:fork1', cache: cacheWith(session({ parent })), refreshFirst: false, writeBack: false });
+  assert.match(text, /Branched from "Parent &lt;\/colleague-session&gt; plan" \(u1:parent1\), a side chat after its turn 3\. /);
+  assert.equal((text.match(/<\/colleague-session>/g) || []).length, 1, 'the title cannot close the wrapper');
+  assert.match(text, /Read the parent with team_session\("u1:parent1"\)\./);
+  assert.match(text, /user: side question/);
+});
+
+test('an invisible or missing parent says so and gets no read hint; a plain session has no branchedFrom', async () => {
+  const hidden = branchedFrom({ parent: { ...parent, visible: false } });
+  assert.equal(hidden.visible, false);
+  assert.equal('note' in hidden, false);
+  assert.equal(branchedFrom({ parent: { id: 'x', visible: true, missing: true } }).visible, false);
+  assert.equal(branchedFrom({}), null);
+  assert.equal(branchedFrom({ parent: null }), null);
+  const text = await teamSession({ sessionId: 'u2:fork1', cache: cacheWith(session({ parent: { ...parent, visible: false } })), refreshFirst: false, writeBack: false });
+  assert.match(text, /The parent is not visible to you\./);
+  const plainList = await teamSessions({ cache: cacheWith(session()), refreshFirst: false });
+  assert.equal('branchedFrom' in plainList.sessions[0], false);
+  const plainText = await teamSession({ sessionId: 'u2:fork1', cache: cacheWith(session()), refreshFirst: false, writeBack: false });
+  assert.doesNotMatch(plainText, /Branched from/);
+});
+
+test('spookling sessions marks forks with ↳ and names the parent', async () => {
+  const rows = [
+    { clientId: 's1', title: 'Plain', project: 'p', turnCount: 2, sharedWith: [] },
+    { clientId: 's2', title: 'Fork', project: 'p', turnCount: 2, sharedWith: [], parent: { id: 's1', relation: 'side_chat', branchedAtTurn: 1, title: 'Plain' } },
+    { clientId: 's3', title: 'Later', project: 'p', turnCount: 2, sharedWith: [], parent: { id: 'gone', relation: 'continued', branchedAtTurn: 0, missing: true } },
+  ];
+  const home = tmp();
+  writeCredentials({ token: 't', apiUrl: 'https://api.t.test' }, { home });
+  const cloud = { listSessions: async () => ({ sessions: rows }), listOrgs: async () => ({ orgs: [] }), listAutoShare: async () => ({ rules: [] }) };
+  const out = await shareStatus({ env: {}, home, cloud });
+  const lines = formatShare(out).split('\n');
+  assert.match(lines[0], /^s1  private/);
+  assert.match(lines[1], /^↳ s2  private\s+p  Fork  \(side chat of "Plain"\)$/);
+  assert.match(lines[2], /^↳ s3  private\s+p  Later  \(continued from gone\)$/);
 });

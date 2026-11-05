@@ -50,7 +50,7 @@ class NoteIn(BaseModel):
 
 
 def create_app(store: Store) -> FastAPI:
-    app = FastAPI(title="Spookling Memory", version="0.1.0")
+    app = FastAPI(title="Spookling Memory", version="0.2.0")
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[HOST, "localhost"])
 
     @app.middleware("http")

@@ -8,21 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { VERSION, apiBase, clean, createCloud, isNetworkError, networkMessage } from './cloud.js';
 import { readCredentials, removeStoredToken, setDefaultOrg, writeCredentials } from './credentials.js';
 import { clearLoginExpired, pushFromLog, projectLog } from './push.js';
+import { orgRecords } from './team.js';
 import { cachedNotice } from './registry.js';
-
-/** The orgs a login belongs to, as { id, name }: active memberships only. */
-function orgRecords(data) {
-  const list = Array.isArray(data?.orgs) ? data.orgs : [];
-  const out = [];
-  for (const item of list) {
-    const org = item?.org && typeof item.org === 'object' ? item.org : item;
-    if (item?.membership?.status && item.membership.status !== 'active') continue;
-    const id = org?.id || item?.orgId;
-    if (typeof id !== 'string' || !id) continue;
-    out.push({ id, name: typeof org?.name === 'string' && org.name ? org.name : id });
-  }
-  return out;
-}
 
 const LOCAL = new Set(['localhost', '127.0.0.1', '[::1]']);
 const inSpookling = (h) => h === 'spookling.com' || h.endsWith('.spookling.com');

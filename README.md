@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · `spookling` 0.1.3 · October 2026*
+*Algorithm v2.1 · `spookling` 0.2.0 · October 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -245,7 +245,7 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost is the status line.
 
-Spookling Memory is out as `spookling` 0.1.3, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
+Spookling Memory is out as `spookling` 0.2.0, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
 
 **Upgrading.** On 0.1.x, run `npx spookling init` once. From 0.2 on, run `spookling update`. Why: [Updating](#updating).
 
@@ -272,9 +272,13 @@ npx spookling logout               # forget the saved token
 npx spookling whoami               # who you are, the API and your default org
 npx spookling orgs                 # the orgs you belong to
 npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `--all` to revoke
+npx spookling refresh              # pull the org feeds into the local cache
+npx spookling sessions [project]   # your newest 20 uploaded sessions (--all, --limit N)
+npx spookling share <session id>   # share a session with an org (unshare to stop)
+npx spookling autoshare <project> on|off   # share every new session of a project
 ```
 
-`login` is explained below, `update` under [Updating](#updating) and `restore` under [Backups and restore](#backups-and-restore); `cli/README.md` has the flags.
+The team commands are explained under [Team memory](#team-memory), `update` under [Updating](#updating) and `restore` under [Backups and restore](#backups-and-restore); `cli/README.md` has the flags.
 
 `spookling init` stays offline. `spookling login` is the separate step that connects you to the Spookling app:
 
@@ -283,7 +287,6 @@ npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `-
 - **Past sessions.** If it finds sessions in this project's or your home `.memory/log.jsonl` that were never uploaded, it asks whether to upload them privately. The default is yes, and with no terminal it takes yes after 20 seconds. Other projects upload when their next session stops. A failed upload never fails the login.
 - **Where the token goes.** It talks to the Spookling app (`https://api.spookling.com`) and saves the token in `~/.spookling/credentials.json` (mode `0600`) together with the server that issued it. The token only ever goes to that server (see [Advanced](#advanced)) and is never printed.
 - **The sign-in link** is opened only when it is on the API's host or a `spookling.com` host; otherwise it is printed with a warning and left unopened.
-- **Tokens.** `spookling tokens` lists the tokens on your account (label, created, last used, and which is this device). `spookling tokens revoke <id>` (a unique prefix of 6 or more characters works) or `--all` revokes them; revoking this device's token, or all, also forgets the saved login.
 - **Afterwards.** `spookling whoami` prints your name and email, the API URL and the default org. If the API cannot be reached, commands say `Couldn't reach <url>`.
 
 You need Node 18 or newer and Claude Code v2.1.139 or later. The server runs on uv, which fetches Python 3.12 if you do not have it.
@@ -317,7 +320,7 @@ To switch, stop the server (`uninstall` offers to) and run `init` again. `status
 | `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows) | the server and the hooks, copied from the package; `uv sync` makes the server's `.venv` there |
 | `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in: `PreCompact`, `UserPromptSubmit`, `Stop`; and the ghost's `statusLine`, if you said yes |
 | `.mcp.json` (project) or Claude Code's user MCP list (user) | the `spookling-memory` server and its tools, `memory_retrieve` and `memory_reset` among them |
-| `.codex/config.toml` (project) or `~/.codex/config.toml` (user), Codex only | the `spookling-memory` MCP server as `[mcp_servers.spookling-memory]`, so Codex can call the memory tools. Codex loads a project file only for a trusted project |
+| `.codex/config.toml` (project) or `~/.codex/config.toml` (user), Codex only | the `spookling-memory` MCP server as `[mcp_servers.spookling-memory]`, so Codex can call the memory and team tools. Codex loads a project file only for a trusted project |
 | `.memory/` | your memory, your tagger's key in `keys.env`, the server's pid and log, and a `.gitignore` that keeps the key and the caches out of git |
 
 Every other key in those files is kept. A file that is not valid JSON is left alone and reported, never overwritten. In an interactive session, Claude Code runs the hooks once you trust the folder, and asks you once to approve a project `.mcp.json` server. `/hooks` and `/mcp` show what is wired. With the server down, the hooks print nothing and exit 0 within about a second, so a prompt is never blocked.
@@ -409,10 +412,27 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 - **Network down:** the turns wait in `~/.spookling/upload-state.json` and go up on a later Stop.
 - **Refused for good:** that session is skipped and the rest still upload. This covers one shared with an org you have since left (`org_owned`), one past the 10,000-turn limit, and one over the 10,000-session account limit (which also pauses creating new sessions for that push). `spookling status` names them.
 - **401:** stops the push, and `status` then says `login expired, run spookling login`. Tokens expire after 90 days unused or 365 days after they were issued.
+- **Tokens:** `spookling tokens` lists the tokens on your account (label, created, last used, and which is this device). `spookling tokens revoke <id>` (a unique prefix of 6 or more characters works) or `--all` revokes them; revoking this device's token, or all, also forgets the saved login.
 
-**Forks.** A forked Claude Code conversation (a side chat, or a continued session) starts with lines copied from its parent. It uploads as its own session linked to the parent: only the turns it adds are sent, numbered from 0, with `parentSessionId`, `branchedAtTurn` (the parent's turn it branched after) and `relation` (`side_chat`, or `continued` when Claude Code left a summary marker). Its title is its first new message. A fork uploaded before this existed is linked on its next upload; its copied turns stay on the server, which only appends.
+**Share.** Sharing is a separate step you take, per session or per project:
 
-**`status`.** `npx spookling status` has a `cloud` line: who you are logged in as (or `not logged in`) and the pending turns. It reads local files only, so it never waits on the network. "Pending" is the number of turns queued in `upload-state.json` that the server has not accepted yet, usually because you were offline; turns that Stop has not reached yet are not counted. A session skipped after a repeated `seq_conflict` is listed on its own `upload` line.
+```bash
+spookling orgs                          # your orgs, as id and name
+spookling sessions [project] [--limit N | --all]   # newest 20 uploaded sessions: private, or shared with which org; plus auto-share rules
+spookling share <session id> [--org <id or name>]
+spookling unshare <session id> [--org <id or name>]   # all orgs without --org
+spookling autoshare <project> on|off [--org <id or name>] [--backfill]
+```
+
+`--org` can be left out: `share` and `autoshare on` then use your default org (saved at login), or your only org. `unshare`, `autoshare off` and `refresh` without `--org` cover every org. `autoshare on` shares every new session of that project; `--backfill` also shares the ones already uploaded. `off` removes the rule; sessions already shared stay shared. Sharing shows the cleaned turns to every active member of the org, and unsharing hides them again but cannot un-tell someone who already read them. The org owns what is shared to it.
+
+You can also ask in the chat: when you are logged in, the prompt hook tells Claude the session id (and nothing else), and the MCP tools `memory_share`, `memory_autoshare` and `memory_share_status` do the same as the commands above. Sharing from chat (`memory_share`, `memory_autoshare on`, and always `--backfill`) first opens a yes/no dialog in your client (MCP elicitation) that names the session or project, the org and, for a backfill, how many sessions; nothing happens without your yes. If your client cannot show that dialog, the tool does nothing and tells Claude to have you run the `spookling share` or `spookling autoshare` command yourself. Unsharing and `autoshare off` reduce exposure and need no confirmation. Text inside a colleague's session can never trigger any of this. `memory_export` and `memory_import` read and write only `~/.spookling/exports/`, and `memory_export` will not replace a file unless `overwrite` is true.
+
+**Forks.** A forked Claude Code conversation (a side chat, or a continued session) starts with lines copied from its parent. It uploads as its own session linked to the parent: only the turns it adds are sent, numbered from 0, with `parentSessionId`, `branchedAtTurn` (the parent's turn it branched after) and `relation` (`side_chat`, or `continued` when Claude Code left a summary marker). Its title is its first new message. A fork uploaded before this existed is linked on its next upload; its copied turns stay on the server, which only appends. `spookling sessions` shows forks as `↳ … (side chat of <parent>)`, and `team_sessions` / `team_session` give an agent `branchedFrom` with how to read the parent.
+
+**Read.** Colleagues' agents read what you shared through two MCP tools, `team_sessions` (list and filter by query, person, project or org) and `team_session` (one session, in full). Each call refreshes every org feed on demand first, then reads the local cache (`~/.spookling/team-feed.json`); if the refresh fails it answers from the cache and says it may be stale. There is no background pull, and the hooks never put colleague text in your prompt: the model calls these tools, and what comes back is quoted data, wrapped so the agent does not follow instructions inside it. `spookling refresh [--org <id or name>]` pulls the feeds by hand. When an org has more than 500 shared sessions the feed says its id list is truncated, and refresh then keeps every cached session instead of purging the ones it did not list.
+
+**`status`.** `npx spookling status` has a `cloud` line: who you are logged in as (or `not logged in`), the last sync, and the pending turns. It reads local files only, so it never waits on the network. "Last sync" is the newest feed time from the last `refresh` or team-tool call, `never` if there has been none; it says nothing about uploads. "Pending" is the number of turns queued in `upload-state.json` that the server has not accepted yet, usually because you were offline; turns that Stop has not reached yet are not counted. A session skipped after a repeated `seq_conflict` is listed on its own `upload` line.
 
 ---
 

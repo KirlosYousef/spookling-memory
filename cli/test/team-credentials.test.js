@@ -10,6 +10,7 @@ import { apiBase, createCloud, DEFAULT_API_URL } from '../src/cloud.js';
 import { login, logout, whoami } from '../src/account.js';
 import { main } from '../src/main.js';
 import { linkCli, status } from '../src/wizard.js';
+import { refresh } from '../src/team.js';
 import { tmpHome, listen, envelope, readReq, BIN, modeOf } from './helpers.mjs';
 
 const homeOf = () => tmpHome('spk-cred-');
@@ -176,6 +177,7 @@ test('init does not log in', async () => {
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /spookling login/);
   assert.match(help.stdout, /init does not do this/);
+  assert.match(help.stdout, /spookling refresh/);
   assert.match(help.stdout, /Advanced \(custom API, tokens for CI\): see the README/);
   assert.doesNotMatch(help.stdout, /SPOOKLING_API_URL|127\.0\.0\.1:4000/);
   assert.match(wizard, /linkCli/);
