@@ -32,8 +32,40 @@ NOISE = re.compile(r"""^\s*(?:
     | \$\ \S | \S+@\S+:\S*\$ | >>>\ | \+\+\+\ | ---\ [ab/] | @@\ -\d   # a shell prompt, a REPL, a diff
     | .*[│┃┆].*[│┃┆]                                    # a terminal table row
     )""", re.X)
-SECRET = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{20,}|A[KS]IA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{30,})\b"  # API keys
-                    r"|\b[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Z0-9_]*\s*[=:]\s*\S+")  # NAME=value
+MASK = "[secret]"
+MASK_INPUT_MAX = TURN_CAP + 256  # only this much of a turn is masked: some patterns rescan a run from each start
+_NAME = r"(?:secret|token|password|passwd|pwd|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)"
+I = re.I
+# The same list, in the same order, as cli/src/mask.js (both are tested against cli/test/fixtures/secret-vectors.json).
+PATTERNS = [
+    (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|(?![\s\S]))"), MASK),
+    (re.compile(r"\bauthorization\s*[:=]\s*(?:bearer|basic|token)\s+\S+", I), MASK),
+    (re.compile(r"\b(?:set-)?cookie\s*:\s*[^\r\n]+", I), MASK),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"), MASK),
+    (re.compile(r"\b([a-z][a-z0-9+.-]{0,20}://)[^\s:/@]+:[^\s/]+@", I), r"\1" + MASK + "@"),
+    (re.compile(r"([?&](?:token|access_token|api[_-]?key|key|password|secret|sig|signature)=)[^&\s#]+", I), r"\1" + MASK),
+    (re.compile(r"(\bcurl\b[^\n]*?\s-u\s+)\S+:\S+", I), r"\1" + MASK),
+    (re.compile(r"\b(?:sk-[A-Za-z0-9_-]{20,}|A[KS]IA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{30,})\b"), MASK),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), MASK),
+    (re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"), MASK),
+    (re.compile(r"\bnpm_[A-Za-z0-9]{30,}"), MASK),
+    (re.compile(r"\bhf_[A-Za-z0-9]{30,}"), MASK),
+    (re.compile(r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"), MASK),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), MASK),
+    (re.compile(r"\bxox[abeoprs]-[A-Za-z0-9-]{8,}"), MASK),
+    (re.compile(r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{8,}"), MASK),
+    (re.compile(r"\bwhsec_[A-Za-z0-9]{16,}"), MASK),
+    (re.compile(r"\bspk_[A-Za-z0-9_-]{20,}"), MASK),
+    (re.compile(r"\b[\w.-]{0,40}" + _NAME + r"""[\w.-]{0,40}["']?\s*[=:]\s*(?!\[secret\])(?:"[^"]*"|'[^']*'|\S+)""", I), MASK),
+]
+
+
+def mask_secrets(text: str) -> str:
+    """Mask secrets in the first MASK_INPUT_MAX characters (callers cut a turn to TURN_CAP anyway); the rest is dropped."""
+    text = text[:MASK_INPUT_MAX]
+    for rx, to in PATTERNS:
+        text = rx.sub(to, text)
+    return text
 
 
 def cap(text: str, n: int = CAP) -> str:
@@ -54,23 +86,33 @@ def clean(text: str) -> str:
     text = MARKER.sub("", FENCE.sub("", WRAPPER.sub("", OURS.sub("", text))))
     keep = [x for x in text.split("\n") if not NOISE.match(x)
             and not (len(x.strip()) >= 20 and sum(c.isalpha() or c.isspace() for c in x) < 0.6 * len(x))]
-    text = SECRET.sub("[secret]", re.sub(r"\n{3,}", "\n\n", "\n".join(keep))).strip()
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(keep)).strip()
+    longer = len(text) > TURN_CAP
+    text = mask_secrets(text).strip()  # mask the capped text only: no pattern ever sees an unbounded turn
     if len(text) > TURN_CAP:
         text = text[:text.rfind(" ", 0, TURN_CAP) if " " in text[:TURN_CAP] else TURN_CAP].rstrip() + " …"
+    elif longer:
+        text += " …"
     return text
 
 
-def turns(path: str | Path) -> list[dict]:
-    """One entry per turn; a part that cleans to nothing stays as an empty entry, since Store.ingest counts places."""
-    out: list[dict] = []
-    tool = False  # a tool call since the assistant's last text: its next text replaces the narration
+def _entries(path: str | Path) -> list[dict]:
+    out = []
     for line in jsonl(Path(path).read_text(encoding="utf-8", errors="replace")):
         try:
             e = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(e, dict) or e.get("type") not in ("user", "assistant") \
-                or e.get("isMeta") or e.get("isSidechain") or e.get("isCompactSummary"):
+        out.append(e if isinstance(e, dict) else {})
+    return out
+
+
+def _build(entries: list[dict]) -> list[tuple[dict, int, int]]:
+    """The turns of these transcript lines, each with the index of its first and last line."""
+    out: list[tuple[dict, int, int]] = []
+    tool = False  # a tool call since the assistant's last text: its next text replaces the narration
+    for i, e in enumerate(entries):
+        if e.get("type") not in ("user", "assistant") or e.get("isMeta") or e.get("isSidechain") or e.get("isCompactSummary"):
             continue
         c = (e.get("message") or {}).get("content")
         blocks = [b for b in c if isinstance(b, dict)] if isinstance(c, list) else []
@@ -81,15 +123,75 @@ def turns(path: str | Path) -> list[dict]:
             tool = tool or called
             continue
         text = clean(text)
-        if out and out[-1]["role"] == e["type"]:
+        if out and out[-1][0]["role"] == e["type"]:
+            turn, first, _ = out[-1]
             if e["type"] == "assistant" and tool and text:
-                out[-1]["content"] = text
+                turn["content"] = text
             elif text:
-                out[-1]["content"] = (out[-1]["content"] + "\n\n" + text).strip()
+                turn["content"] = (turn["content"] + "\n\n" + text).strip()
+            out[-1] = (turn, first, i)
         else:
-            out.append({"role": e["type"], "content": text})
+            out.append(({"role": e["type"], "content": text}, i, i))
         tool = called
     return out
+
+
+def turns(path: str | Path) -> list[dict]:
+    """One entry per turn; a part that cleans to nothing stays as an empty entry, since Store.ingest counts places."""
+    return [t for t, _, _ in _build(_entries(path))]
+
+
+FORK_NOTE = re.compile(r"The user forked this session", re.I)
+
+
+def fork_of(path: str | Path, sid: str) -> dict | None:
+    """A forked transcript starts with lines copied from its parent, which still carry the PARENT's sessionId; the fork's own
+    lines carry sid. Returns None for any other transcript, else:
+      parent       the sessionId of the last copied line (the direct parent; a fork of a fork copies a fork's lines too)
+      relation     "continued" when Claude Code left a summary / compact-summary marker at the top, else "side_chat"
+      branched_at  the parent's own turn the fork branched after: the parent's turns found in the copy, minus 1. The parent
+                   uploads only its own turns, numbered from 0, so this is that seq
+      copied       how many of this transcript's logged turns come from the copy (a turn that continues copied text counts)
+    ponytail: the continued marker (type "summary" + leafUuid, or isCompactSummary) is from Claude Code's format, not seen in a
+    real file here; the side chat marker (the "forked this session" note) is."""
+    entries = _entries(path)
+    boundary = next((i for i, e in enumerate(entries) if e.get("sessionId") == sid), None)
+    if not boundary:  # no own line, or the file starts with them: not a fork
+        return None
+    head = entries[:boundary]
+    copied = [e["sessionId"] for e in head
+              if e.get("type") in ("user", "assistant") and isinstance(e.get("sessionId"), str) and e["sessionId"] != sid]
+    if not copied:
+        return None
+    parent = copied[-1]
+    segment = [e if e.get("sessionId") == parent else {} for e in head]  # keep the indexes; drop the other sessions' lines
+    parent_turns = [t for t, _, _ in _build(segment) if t["content"].strip()]
+    built = _build(entries)
+    text = json.dumps([e.get("message") for e in entries[boundary:boundary + 40] if e.get("type") == "user"], ensure_ascii=False)
+    marker = any(e.get("type") == "summary" and e.get("leafUuid") for e in entries[:boundary + 40]) \
+        or any(e.get("isCompactSummary") for e in entries[:boundary + 40])
+    return {
+        "parent": parent,
+        "relation": "continued" if marker and not FORK_NOTE.search(text) else "side_chat",
+        "branched_at": max(len(parent_turns) - 1, 0),
+        "copied": sum(1 for t, first, _ in built if first < boundary and t["content"].strip()),
+    }
+
+
+def save_fork(folder: Path, sid: str, fork: dict) -> None:
+    """forks.json beside log.jsonl, for the uploader. log.jsonl itself is never touched. Written only when it changed."""
+    path = Path(folder) / "forks.json"
+    try:
+        have = json.loads(path.read_text(encoding="utf-8"))
+        have = have if isinstance(have, dict) else {}
+    except (OSError, ValueError):
+        have = {}
+    if have.get(sid) == fork:
+        return
+    have[sid] = fork
+    tmp = path.with_name(f"forks.json.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(have, indent=1) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def payload(body: bytes) -> dict:
@@ -166,6 +268,13 @@ def handle(store, event: str, p: dict) -> tuple[dict, dict]:
     path = local_path(str(p.get("transcript_path") or ""))
     if path.suffix == ".jsonl" and path.is_file():
         conversation = codex_turns(path) if agent == "codex" else turns(path)
+        if agent != "codex":
+            try:
+                fork = fork_of(path, sid)
+                if fork:
+                    save_fork(store.folder, sid, fork)
+            except Exception as e:  # a fork note is never worth a failed hook
+                LOG.warning("fork detection failed for %s: %r", sid, e)
         last = clean(str(p.get("last_assistant_message") or ""))
         if conversation and last and event == "stop":  # the file can lag the final reply at Stop
             if conversation[-1]["role"] != "assistant":

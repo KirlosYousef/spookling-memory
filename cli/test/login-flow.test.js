@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpHome } from './helpers.mjs';
 import { CloudError, isNetworkError, networkMessage } from '../src/cloud.js';
 import { readCredentials, writeCredentials } from '../src/credentials.js';
@@ -36,6 +36,11 @@ const run = (home, extra = {}, cloud = fake()) => {
   }).then((code) => ({ code, out, sleeps }));
   return p;
 };
+const logLines = (...ids) => ids.flatMap((id) => [
+  { session_id: id, role: 'user', ts: '2026-11-03T09:00:00Z', text: `hello ${id}` },
+  { session_id: id, role: 'assistant', ts: '2026-11-03T09:00:05Z', text: 'hi' },
+].map((e) => JSON.stringify(e))).join('\n') + '\n';
+const writeLog = (dir, ...ids) => { mkdirSync(join(dir, '.memory'), { recursive: true }); writeFileSync(join(dir, '.memory', 'log.jsonl'), logLines(...ids)); };
 
 test('login transcript: opening, url, code, waiting, default org', async () => {
   const { code, out } = await run(homeOf());
@@ -117,6 +122,70 @@ test('default org: one org is saved at once (mode 0600), two ask, none says so',
   const broken = await run(homeOf(), {}, fake({ orgList: down() }));
   assert.equal(broken.code, 0, 'a failed org lookup does not fail the login');
   assert.match(broken.out, /Could not read your orgs/);
+});
+
+test('past sessions: asked, uploaded privately, counted; already uploaded ones are not', async () => {
+  const home = homeOf(), proj = join(home, 'work', 'app');
+  mkdirSync(join(proj, '.git'), { recursive: true });
+  writeLog(proj, 's1', 's2');
+  writeLog(home, 'h1');
+  mkdirSync(join(home, '.spookling'), { recursive: true });
+  writeFileSync(join(home, '.spookling', 'upload-state.json'), JSON.stringify({ cursors: { h1: 1 }, skipped: {}, queue: [], shares: [] }));
+  const posts = [], asked = [];
+  const r = await run(home, { cwd: proj, confirm: async (q, def) => { asked.push([q, def]); return true; } }, fake({ posts }));
+  assert.equal(r.code, 0);
+  assert.deepEqual(asked, [['Upload your 2 past sessions privately? Only you can see them until you share.', true]]);
+  assert.deepEqual(posts.sort(), ['POST s1 2', 'POST s2 2', 'PUT s1', 'PUT s2']);
+  assert.match(r.out, /Uploaded 2 sessions privately\./);
+  assert.match(r.out, /Looked in .*app[\\/]\.memory[\\/]log\.jsonl and ~[\\/]\.memory[\\/]log\.jsonl\. Other projects upload when their next session stops\./);
+});
+
+test('declining the backfill uploads nothing', async () => {
+  const home = homeOf();
+  writeLog(home, 's1');
+  const posts = [];
+  const r = await run(home, { confirm: async () => false }, fake({ posts }));
+  assert.equal(r.code, 0);
+  assert.deepEqual(posts, []);
+  assert.match(r.out, /Skipped\. They upload one by one when a session stops\./);
+});
+
+test('a backfill that fails never fails the login', async () => {
+  const home = homeOf();
+  writeLog(home, 's1');
+  const cloud = { ...fake(), upsertSession: async () => { throw down(); } };
+  const r = await run(home, { confirm: async () => true }, cloud);
+  assert.equal(r.code, 0);
+  assert.match(r.out, /Uploaded 0 sessions privately\.\nSome turns did not go up .*retry at the next Stop/);
+  assert.equal(readCredentials({ home, env: {} }).token, 'spk_t');
+});
+
+test('with no TTY the real prompt takes Yes by default', () => {
+  const home = homeOf();
+  writeLog(home, 's1', 's2', 's3');
+  const script = join(homeOf(), 'run.mjs');
+  const src = pathToFileURL(fileURLToPath(new URL('../src/account.js', import.meta.url))).href;
+  writeFileSync(script, `
+    import { login } from ${JSON.stringify(src)};
+    const posts = [];
+    const cloud = {
+      base: () => 'https://api.test',
+      deviceStart: async () => ({ deviceCode: 'd', userCode: 'AAAA-BBBB', verificationUri: 'https://api.test/x', interval: 1, expiresIn: 60 }),
+      pollToken: async () => ({ status: 'approved', token: 'spk_t', user: { name: 'Ada' } }),
+      listOrgs: async () => ({ orgs: [] }),
+      upsertSession: async () => ({}),
+      postTurns: async ({ sid, turns }) => { posts.push(sid); return { lastSeq: turns.at(-1).seq }; },
+      listAutoShare: async () => ({ rules: [] }),
+    };
+    const code = await login({ home: ${JSON.stringify(home)}, env: {}, cloud, sleep: async () => {}, openUrl: () => true });
+    console.log('POSTS ' + posts.sort().join(','));
+    process.exit(code);
+  `);
+  const r = spawnSync(process.execPath, [script], { input: '', encoding: 'utf8', timeout: 30000, env: { ...process.env, NO_COLOR: '1' } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /Upload your 3 past sessions privately\? Only you can see them until you share\. \[Y\/n\]/);
+  assert.match(r.stdout, /Uploaded 3 sessions privately\./);
+  assert.match(r.stdout, /POSTS s1,s2,s3/);
 });
 
 test('whoami prints name, email, API and default org; logged out exits 1', () => {

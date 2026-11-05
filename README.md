@@ -280,6 +280,7 @@ npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `-
 
 - **Sign in.** It opens your browser, shows a code to confirm, and waits for approval. It retries through a flaky network until the code expires.
 - **Default org.** When you approve, it saves a default org: the only one, or the one you pick from your orgs.
+- **Past sessions.** If it finds sessions in this project's or your home `.memory/log.jsonl` that were never uploaded, it asks whether to upload them privately. The default is yes, and with no terminal it takes yes after 20 seconds. Other projects upload when their next session stops. A failed upload never fails the login.
 - **Where the token goes.** It talks to the Spookling app (`https://api.spookling.com`) and saves the token in `~/.spookling/credentials.json` (mode `0600`) together with the server that issued it. The token only ever goes to that server (see [Advanced](#advanced)) and is never printed.
 - **The sign-in link** is opened only when it is on the API's host or a `spookling.com` host; otherwise it is printed with a warning and left unopened.
 - **Tokens.** `spookling tokens` lists the tokens on your account (label, created, last used, and which is this device). `spookling tokens revoke <id>` (a unique prefix of 6 or more characters works) or `--all` revokes them; revoking this device's token, or all, also forgets the saved login.
@@ -396,6 +397,25 @@ Rather have your assistant do it? [`PASTE-ME.md`](PASTE-ME.md) has one block for
 
 ---
 
+## Team memory
+
+Optional, and only after `spookling login`. `init` never logs in and works offline; with no login the hooks upload nothing.
+
+**Upload.** Once you are logged in, each Stop hook uploads the finished session to the Spookling app, named after its git repo.
+
+- **Private:** only you can see it until you share it.
+- **What goes up:** the cleaned turns from `.memory/log.jsonl`, cut to 4,000 characters each, with secrets masked first. `log.jsonl` itself is not changed.
+- **What is masked:** API keys, AWS key IDs, GitHub tokens, `NAME_TOKEN=value` lines, JWTs, PEM private-key blocks, `scheme://user:pass@` URLs, Slack tokens, Stripe keys. This is pattern matching, so a secret in another shape still gets through.
+- **Network down:** the turns wait in `~/.spookling/upload-state.json` and go up on a later Stop.
+- **Refused for good:** that session is skipped and the rest still upload. This covers one shared with an org you have since left (`org_owned`), one past the 10,000-turn limit, and one over the 10,000-session account limit (which also pauses creating new sessions for that push). `spookling status` names them.
+- **401:** stops the push, and `status` then says `login expired, run spookling login`. Tokens expire after 90 days unused or 365 days after they were issued.
+
+**Forks.** A forked Claude Code conversation (a side chat, or a continued session) starts with lines copied from its parent. It uploads as its own session linked to the parent: only the turns it adds are sent, numbered from 0, with `parentSessionId`, `branchedAtTurn` (the parent's turn it branched after) and `relation` (`side_chat`, or `continued` when Claude Code left a summary marker). Its title is its first new message. A fork uploaded before this existed is linked on its next upload; its copied turns stay on the server, which only appends.
+
+**`status`.** `npx spookling status` has a `cloud` line: who you are logged in as (or `not logged in`) and the pending turns. It reads local files only, so it never waits on the network. "Pending" is the number of turns queued in `upload-state.json` that the server has not accepted yet, usually because you were offline; turns that Stop has not reached yet are not counted. A session skipped after a repeated `seq_conflict` is listed on its own `upload` line.
+
+---
+
 ## Your memory moves with you
 
 Your memory is not locked inside a tool. It is a folder of plain files.
@@ -477,7 +497,9 @@ What leaves your machine, and when:
 - **The reader is your harness.** Recalled lines ride along with your prompt to the model Claude Code already talks to. We send them nowhere else.
 - **A flagged item goes once more,** to the same tagger (or to Jev), with its message: a contradiction, a rule, a correction, a doubtful date, a low-confidence tag, an unlisted class.
 
-The server listens on 127.0.0.1 only. Pasted secrets can land in the log. Each new turn has its keys and tokens masked before it is logged (`sk-` keys, AWS key IDs, GitHub tokens, `NAME_TOKEN=value` lines), but a secret in another shape gets through, and the log is append-only. A purge command is on the list. Keep `.memory/` out of shared repos until then.
+- **If you log in, finished sessions upload to the Spookling app,** private to you until you share them (see [Team memory](#team-memory)). Without a login nothing is uploaded.
+
+The server listens on 127.0.0.1 only. Pasted secrets can land in the log. Each new turn has its keys and tokens masked before it is logged (`sk-` keys, AWS key IDs, GitHub tokens, `NAME_TOKEN=value` lines), and uploaded turns are masked again, with JWTs, private-key blocks, URL credentials, Slack tokens and Stripe keys added. A secret in another shape gets through, and the log is append-only. A purge command is on the list. Keep `.memory/` out of shared repos until then.
 
 ---
 

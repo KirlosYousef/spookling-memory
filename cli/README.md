@@ -6,11 +6,11 @@ The install wizard for Spookling Memory. Node 18 or newer, no dependencies. Work
 npx spookling init                 # the intro, then the step-by-step install, for this project
 npx spookling init --scope user    # the same, wired for every project you open in Claude Code
 npx spookling demo                 # the whole install as you would see it, answered for you; writes nothing
-npx spookling status               # is the server up, what is wired (project and user files), which tagger, and a `cloud` line (see [login](#login)); exit 0 when all is well
+npx spookling status               # is the server up, what is wired (project and user files), which tagger, and a `cloud` line (see Team memory); exit 0 when all is well
 npx spookling uninstall            # remove the hooks and the MCP entry (add --scope user for the user files), keep .memory/
 npx spookling update [--check] [--version x [--force]]   # install the newest version and re-wire hooks and MCP entries (--check: exit 10 if one is available)
 npx spookling restore [<timestamp>] [--yes]   # list the config backups init, update and uninstall made, or put one run's files back (--yes without a terminal)
-npx spookling login                # sign in in the browser, pick a default org; init does not do this
+npx spookling login                # sign in in the browser, pick a default org, offer to upload past sessions; init does not do this
 npx spookling logout               # forget the saved token
 npx spookling whoami               # name and email, the API URL, the default org
 npx spookling orgs                 # the orgs you belong to, as id and name
@@ -186,15 +186,38 @@ Waiting for approval… (Ctrl-C to cancel)
 
 The browser is opened only for an https link (http on this machine) on the API's host, a `spookling.com` host, or this machine when the API is on this machine; Windows uses `rundll32 url.dll,FileProtocolHandler`, never `cmd`. Any other link is printed under a warning and not opened. With no browser or no display it adds `Open the link above in a browser.` Colour is used only on a terminal; with `NO_COLOR` or a pipe the output is plain. Polling retries network errors and 5xx with a growing wait (capped at 30 s) until the code expires; only a 404 (invalid code), a denial or expiry end it, and an expiry after a dead network says so. A 429 waits for `Retry-After`. An unreachable API prints `Couldn't reach <api>. Check your connection, or SPOOKLING_API_URL if you set it.`, here and in `logout`, `orgs`, `refresh` and the sharing commands.
 
-After approval, one more step, which cannot fail the login:
+After approval, three more steps, none of which can fail the login:
 
 1. **Default org.** `GET /cli/orgs`. One org becomes `defaultOrgId` (and `defaultOrgName`) in `~/.spookling/credentials.json`, mode `0600`, and it prints `Default org: <name>`. Several: on a terminal you pick one from a menu; with no terminal the first is taken after 20 s. None: it says so. A re-login replaces the default. `logout` clears it.
+2. **Past sessions.** It looks in `<current folder>/.memory/log.jsonl` and `~/.memory/log.jsonl`, the two logs Stop reads (there is no list of other projects), and counts the sessions there that `~/.spookling/upload-state.json` shows as not fully uploaded.
+3. **Ask.** `Upload your N past sessions privately? Only you can see them until you share. [Y/n]`. Yes is the default, also after 20 s with no terminal. It then prints `Uploaded N sessions privately.` and the logs it looked in. Projects elsewhere upload when their next session stops. If the upload fails, the turns stay queued for the next Stop.
 
 ## Advanced
 
 - **A different server:** `spookling login --api-url <url>` (or `SPOOKLING_API_URL` for that login) picks the origin; it is saved as `apiUrl` with the token.
 - **CI and headless use:** `SPOOKLING_TOKEN` is used instead of the saved login, and only with an explicit `SPOOKLING_API_URL` that passes the https rule; `whoami` then shows no API line.
 - **Origin pinning:** a saved login only talks to the server it was issued by (an older credentials file without `apiUrl` is pinned to the shipped app). A different `SPOOKLING_API_URL` is ignored for authenticated calls: interactive commands print one line saying so, hooks say nothing. Origins must be `https`, except `localhost`, `127.0.0.1` and `[::1]`.
+
+## Team memory
+
+Optional, and never part of `init`. The full picture is in the [main README](https://github.com/Spookling/spookling-memory#team-memory); the parts the CLI owns:
+
+- **Upload.** With a saved login, the Stop hook waits for the session's log to go quiet, then uploads its turns, private to you.
+  - Masking: turns are masked first (`cli/src/mask.js`: JWTs, PEM private-key blocks, `scheme://user:pass@`, Slack `xox?-` tokens, Stripe `sk_live_`/`rk_live_`/test keys, plus the API-key and `NAME_TOKEN=value` patterns the server applies) and cut to 4,000 characters. `log.jsonl` is never rewritten.
+  - Network down: the turns are queued in `~/.spookling/upload-state.json`.
+  - 429: waits once and retries.
+  - 409 `seq_conflict`: retried on the next Stop, then skipped; `status` names the session.
+  - Final refusals, which never block the other sessions: 403 `org_owned` (shared with an org you left), 400 `turn_limit` and 400 `session_limit` (that one also stops creating new sessions in the same push while existing sessions keep growing). They are recorded in `upload-state.json` and `status` lists them.
+  - 401: stops the push, keeps your login, and makes `status` print `login expired, run spookling login` until the next login or successful upload.
+  - Limits: `project` is cut to 100 characters and `title` to 120, the API's limits.
+- **Forks.** The server (`hooks.py`, `fork_of`) spots a forked Claude Code transcript: its leading lines carry another `sessionId` (the parent's) than the file's own.
+  - Record: `{parent, relation, branched_at, copied}` in `forks.json` beside `log.jsonl` (which keeps the whole conversation, as before).
+  - Upload: the uploader reads that file. A new fork sends only the turns after the first `copied`, numbered from 0, and its PUT carries `parentSessionId`, `branchedAtTurn` and `relation`; the title comes from its first new user message.
+  - `branchedAtTurn` is the number of the parent's own turns in the copy, minus 1, which is the seq the parent uploads with (a fork of a fork counts only the direct parent's turns; a parent that is itself an already-uploaded duplicate is not corrected for).
+  - `relation` is `continued` when a `summary` line with a `leafUuid` (or an `isCompactSummary` line) sits at the top and there is no "forked this session" note, else `side_chat`. The continued marker follows Claude Code's format and was not seen in a real file here.
+  - Earlier sessions: one uploaded before forks were known keeps its numbering (`forkModes` in `upload-state.json`) and is linked with one PUT.
+  - Codex rollouts: no fork marker was found in the local files, so Codex forks upload like any session.
+- **`status` cloud line.** `logged in as <email>; N turns in M sessions not uploaded yet`, or `not logged in`. Local files only (credentials, upload queue), so it cannot hang offline. Pending is the turns queued in `upload-state.json`, not turns Stop has yet to read. It does not change the exit code.
 
 ## Undo
 
