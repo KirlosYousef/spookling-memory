@@ -18,7 +18,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test cli/test/hooks.test.js cli/test/ui.test.js cli/test/codex.test.js cli/test/ghost.test.js"
+    "test": "node cli/test/run-suite.mjs"
   },
   "repository": {
     "type": "git",

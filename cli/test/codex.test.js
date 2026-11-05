@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import path, { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpHome } from './helpers.mjs';
 import { addHooks, removeHooks, codexHandlers, codexHooksPath, CODEX_EVENTS } from '../src/hooks.js';
 import { hooksJson } from '../src/wizard.js';
 
@@ -51,7 +52,7 @@ test('Codex shell commands quote paths; Windows uses a quoted native path', () =
 });
 
 test('real Codex command: health, recall, capture and compaction reuse the HTTP API with truthful ghost output', async () => {
-  const dir = join(mkdtempSync(join(tmpdir(), 'spk-codex-')), (process.platform === 'win32' ? "spookling's space" : "spookling's $pace `literal`"), 'hooks');
+  const dir = join(tmpHome('spk-codex-'), (process.platform === 'win32' ? "spookling's space" : "spookling's $pace `literal`"), 'hooks');
   mkdirSync(dir, { recursive: true });
   for (const f of ['spookling-codex.cjs', 'ghost.js', 'pulse.js']) copyFileSync(join(dirname(hook), f), join(dir, f));
   const hs = codexHandlers(dir), seen = [];
@@ -120,7 +121,7 @@ test('real Codex command: health, recall, capture and compaction reuse the HTTP 
 });
 
 test('installed package: status and uninstall find Codex hooks in both scopes without granting trust', () => {
-  const project = mkdtempSync(join(tmpdir(), 'spk-codex-config-'));
+  const project = tmpHome('spk-codex-config-');
   const wizard = new URL('../src/wizard.js', import.meta.url).href;
   const hooks = new URL('../src/hooks.js', import.meta.url).href;
   const term = new URL('../src/term.js', import.meta.url).href;

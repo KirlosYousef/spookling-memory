@@ -8,15 +8,21 @@ npx spookling init --scope user    # the same, wired for every project you open 
 npx spookling demo                 # the whole install as you would see it, answered for you; writes nothing
 npx spookling status               # is the server up, what is wired (project and user files), which tagger; exit 0 when all is well
 npx spookling uninstall            # remove the hooks and the MCP entry (add --scope user for the user files), keep .memory/
+npx spookling update [--check] [--version x [--force]]   # install the newest version and re-wire hooks and MCP entries (--check: exit 10 if one is available)
+npx spookling restore [<timestamp>] [--yes]   # list the config backups init, update and uninstall made, or put one run's files back (--yes without a terminal)
 ```
 
-Until the npm package is published, run the same commands from a clone: `node <clone>/bin/spookling-memory.js init` (below).
+An unknown command prints `Unknown command: <name>` to stderr, then the help, and exits 1; a bare `spookling`, `help`, `-h` and `--help` print the help and exit 0.
+
+`init` installs the hooks and a `spookling` command (`~/.local/bin/spookling`, or `%USERPROFILE%\AppData\Local\spookling-memory\bin\spookling.cmd` on Windows).
+
+Upgrading from an older version: see [Updating](#updating).
 
 `init` copies the package's `server/` and `hooks/` to a folder per version, `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows), runs `uv sync` there and wires that folder, so nothing Claude Code runs lives in the npx cache, which npm may clear. A new version gets a new folder; `uninstall` leaves them.
 
 ## Install from a clone
 
-One repo has everything: the wizard, the hooks and the server, the memory algorithm included (`server/spookling_memory/core/`; memory-bench is not needed). The repo is private for now, so the clone URL below is a placeholder. Run `init` from the project folder you want the memory in; `.memory/` is created there. `init` copies the clone's `server/` and `hooks/` as it does from the package, so after a `git pull`, run `init` again to wire the new code.
+One repo has everything: the wizard, the hooks and the server, the memory algorithm included (`server/spookling_memory/core/`; memory-bench is not needed). Run `init` from the project folder you want the memory in; `.memory/` is created there. `init` copies the clone's `server/` and `hooks/` as it does from the package, so after a `git pull`, run `init` again to wire the new code.
 
 ### macOS (zsh)
 
@@ -24,7 +30,7 @@ One repo has everything: the wizard, the hooks and the server, the memory algori
 brew install node                                   # Node 18+, or the installer from nodejs.org
 curl -LsSf https://astral.sh/uv/install.sh | sh     # uv, which runs the Python server
 mkdir -p ~/src && cd ~/src
-git clone <spookling-memory repo URL> spookling-memory
+git clone https://github.com/Spookling/spookling-memory.git spookling-memory
 cd ~/code/your-project
 node ~/src/spookling-memory/bin/spookling-memory.js init                 # this project
 node ~/src/spookling-memory/bin/spookling-memory.js init --scope user    # or every project
@@ -41,7 +47,7 @@ winget install OpenJS.NodeJS.LTS                                       # Node 18
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 # open a new PowerShell window so node and uv are on PATH
 mkdir $HOME\src; cd $HOME\src
-git clone <spookling-memory repo URL> spookling-memory
+git clone https://github.com/Spookling/spookling-memory.git spookling-memory
 cd $HOME\code\your-project
 node $HOME\src\spookling-memory\bin\spookling-memory.js init                # this project
 node $HOME\src\spookling-memory\bin\spookling-memory.js init --scope user   # or every project
@@ -68,7 +74,15 @@ Windows sessions then log into the WSL project's `.memory/`; the server reads th
 - `--fast` (demo only) drops the pauses. Without it the demo takes about a minute; any key cuts the current pause short.
 - `--frames N` (demo only) prints N frames from across the intro, one after another, and stops. Useful for checking the drawing without a live terminal.
 
-The intro animates at 40 x 16 or larger. During `init` the ghost then stays at the top of the screen: it drifts and bobs on a purple band and says one line per step in a speech bubble, while the steps scroll below it. That stage needs 80 x 24 and takes the top 9 rows; from 30 rows it shows a larger ghost and takes 11. It redraws at 12 fps while a step runs and holds still while a prompt waits, so typing is never disturbed. It uses the alternate screen; when it closes, the whole log of the steps is printed again in the normal screen, so it stays in your scrollback (also on Ctrl-C). With `NO_COLOR`, output that is not a terminal, `--no-anim`, a smaller terminal, or a Windows console older than Windows 10 (no escape sequences), there is no animation and the ghost's lines print as `spookling: ...` among the steps. Colour is 24-bit when `COLORTERM` is `truecolor` or `24bit`, or in Windows Terminal (`WT_SESSION`), 256 colours otherwise. `FORCE_COLOR=1` keeps colour in piped output. Any key skips the intro; Ctrl-C restores the terminal and exits.
+The intro animates at 40 x 16 or larger.
+
+- **During `init`** the ghost then stays at the top of the screen: it drifts and bobs on a purple band and says one line per step in a speech bubble, while the steps scroll below it.
+- **Size:** that stage needs 80 x 24 and takes the top 9 rows; from 30 rows it shows a larger ghost and takes 11.
+- **Redraw:** 12 fps while a step runs; it holds still while a prompt waits, so typing is never disturbed.
+- **Screen:** it uses the alternate screen. When it closes, the whole log of the steps is printed again in the normal screen, so it stays in your scrollback (also on Ctrl-C).
+- **No animation** with `NO_COLOR`, output that is not a terminal, `--no-anim`, a smaller terminal, or a Windows console older than Windows 10 (no escape sequences): the ghost's lines print as `spookling: ...` among the steps.
+- **Colour** is 24-bit when `COLORTERM` is `truecolor` or `24bit`, or in Windows Terminal (`WT_SESSION`), 256 colours otherwise. `FORCE_COLOR=1` keeps colour in piped output.
+- **Keys:** any key skips the intro; Ctrl-C restores the terminal and exits.
 
 At a terminal, the harness and the tagger are picked from menus (arrows, then Enter) and a key shows as bullets while you type or paste it; the key itself is never printed.
 
@@ -78,13 +92,13 @@ Step 3 asks how the tagger runs: the small model that reads each chat once, afte
 
 | Choice | Server started with | Needs | Checked by |
 | --- | --- | --- | --- |
-| 1 Jev through an OpenRouter key (the default) | `--model typesafe/jev-router` | `OPENROUTER_API_KEY` | the first tag. About $0.002 a chat: the router is billed per call (199 chats cost $0.30 on 19 Oct 2026) and Jev itself is $0.042 per million input tokens |
+| 1 Jev through an OpenRouter key (the default) | `--model typesafe/jev-router` | `OPENROUTER_API_KEY` | the first tag. About $0.002 a chat: the router is billed per call (199 chats cost $0.30 when we measured it) and Jev itself is $0.042 per million input tokens |
 | 2 Anthropic API key | `--model anthropic/claude-haiku-4.5` | `ANTHROPIC_API_KEY` (starts `sk-ant-`) | the first tag. Haiku 4.5 at Anthropic's API price |
 | 3 Your Codex subscription | `--model codex` | the `codex` CLI on the server's PATH, logged in with ChatGPT (Plus or higher) | `codex login status`, run by the wizard, its line shown |
 
-`codex login status` only checks that a login is saved: on 23 Oct 2026 it said `Logged in using ChatGPT` here while every call failed with an expired refresh token. The first tag is the real check; a failed one leaves its reason in `.memory/server.log` and the chat untagged until the next try. Fix it with `codex logout`, then `codex login`.
+`codex login status` only checks that a login is saved: it has said `Logged in using ChatGPT` while every call failed with an expired refresh token. The first tag is the real check; a failed one leaves its reason in `.memory/server.log` and the chat untagged until the next try. Fix it with `codex logout`, then `codex login`.
 
-A subscription tagger is slower: several seconds per chat (it starts the CLI each time), against about a second over an API. The Stop hook does not wait for it, but the server tags one chat at a time, so a prompt sent while a chat is being tagged waits, and recall for that prompt is dropped if the wait passes 15 s. Each tagged chat uses a little of your plan's allowance, and your own subscription terms apply. How the server runs `codex exec`, and the docs behind each flag: [docs/subscription-taggers.md](../docs/subscription-taggers.md).
+A subscription tagger is slower: several seconds per chat (it starts the CLI each time), against about a second over an API. The Stop hook does not wait for it, but the server tags one chat at a time, so a prompt sent while a chat is being tagged waits, and recall for that prompt is dropped if the wait passes 15 s. Each tagged chat uses a little of your plan's allowance, and your own subscription terms apply. How the server runs `codex exec`, and the docs behind each flag: [docs/subscription-taggers.md](https://github.com/Spookling/spookling-memory/blob/main/docs/subscription-taggers.md).
 
 To switch the tagger, stop the server (`uninstall`, or kill the pid in `.memory/server.pid`) and run `init` again; `init` reports a running server that tags with something else. `status` shows which tagger the running server uses.
 
@@ -108,12 +122,13 @@ Every write is shown before it happens; answer `n` to skip it. Every command it 
 | `.mcp.json` (project) | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_URL` in its `env` |
 | user MCP list (user scope) | the same entry, added with `claude mcp add-json spookling-memory '<entry>' --scope user`. Claude Code keeps it in `~/.claude.json`, a file it writes itself, so the wizard only reads that file. |
 | `.codex/hooks.json` (Codex, project) or `$CODEX_HOME/hooks.json` (Codex, user; default `~/.codex/hooks.json`) | SessionStart, UserPromptSubmit, PreCompact and Stop hooks merged in; existing hooks stay |
+| `.codex/config.toml` (Codex, project) or `$CODEX_HOME/config.toml` (Codex, user; default `~/.codex/config.toml`) | `[mcp_servers.spookling-memory]` with `command`, `args` and an `[mcp_servers.spookling-memory.env]` table: the same `uv run --project <server> spookling-memory mcp` entry Claude gets, so Codex can call the memory tools. User scope runs `codex mcp add` (and `codex mcp remove` first for a stale entry); project scope edits only our own table. Codex reads a project `.codex/config.toml` only for a trusted project. |
 
 It also runs `uv sync` in the server folder. `<server>` and `<hooks>` are the `server/` and `hooks/` folders in `~/.spookling-memory/<version>/`, never the package itself (from Windows through `\\wsl.localhost`, the clone's own, on the share). `CLAUDE_CONFIG_DIR` moves the user files, as it does for Claude Code. On Windows, `~` is `%USERPROFILE%`. Every other key in each file is kept. A file that is not valid JSON is left untouched and reported, never overwritten.
 
 ## What Claude Code does with it
 
-Checked against the current Claude Code docs on 21 Oct 2026; [docs/claude-code-facts.md](../docs/claude-code-facts.md) has each fact and its source.
+Each fact below, with its source, is in [docs/claude-code-facts.md](https://github.com/Spookling/spookling-memory/blob/main/docs/claude-code-facts.md).
 
 - The hooks use exec form (`command` plus `args`), which Claude Code spawns with no shell on every OS, so no path needs quoting. It needs Claude Code v2.1.139 or later.
 - In an interactive session, hooks wait until you accept the folder's trust dialog, and Claude Code asks you once to approve the project's `.mcp.json` server.
@@ -123,7 +138,7 @@ Checked against the current Claude Code docs on 21 Oct 2026; [docs/claude-code-f
 
 ## The ghost
 
-What shows where, and when (facts 49 to 66 in [docs/claude-code-facts.md](../docs/claude-code-facts.md)):
+What shows where, and when (facts 49 to 66 in [docs/claude-code-facts.md](https://github.com/Spookling/spookling-memory/blob/main/docs/claude-code-facts.md)):
 
 | Where | When | What |
 | --- | --- | --- |
@@ -150,7 +165,7 @@ On Windows the stop is forced, so the server cannot remove its temporary copy of
 
 ## Codex
 
-Run `node <clone>/bin/spookling-memory.js init` and select **Codex** (add `--scope user` for user hooks). The wizard uses the same server, `.memory/` folder and tagger choices as Claude Code. It merges native hooks into `.codex/hooks.json` for this project, or `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) for user scope. No Codex executable or source files are patched, and no MCP entry is needed for automatic hooks.
+Run `node <clone>/bin/spookling-memory.js init` and select **Codex** (add `--scope user` for user hooks). The wizard uses the same server, `.memory/` folder and tagger choices as Claude Code. It merges native hooks into `.codex/hooks.json` for this project, or `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) for user scope. No Codex executable or source files are patched. The hooks need no MCP entry, but the memory tools do, so `init` also registers the `spookling-memory` MCP server for Codex: `codex mcp add` for user scope, a merge of our own `[mcp_servers.spookling-memory]` table into `.codex/config.toml` for project scope (Codex loads project config only when the project is trusted). Re-running `init` replaces an entry that points at an older version folder; every other line of `config.toml` stays. `status` shows it on a `codex-mcp` line.
 
 In Codex, open `/hooks` and review/trust the new commands; project hooks also require a trusted project. Installation does not grant trust. Changed hook definitions require another review. `status` reports configuration and server availability; it does not claim to verify Codex's trust or that hooks ran.
 
@@ -159,31 +174,93 @@ In Codex, open `/hooks` and review/trust the new commands; project hooks also re
 - **Stop / PreCompact:** reuse the existing background capture and compaction endpoints, reading Codex's rollout transcript on the server. No Stop continuation decisions or extra model turns.
 - **Unavailable:** show the `degraded` ghost (`memory unavailable`) on a failed health check or recall; continue Codex normally. `SPOOKLING_TAGGING=1` skips the hooks to avoid recursion when Codex itself is the tagger.
 
-The ghost appears in hook activity and informational messages (Codex surfaces `systemMessage` as a warning), not as a permanent screen widget. It confirms the stated operation, not that the model used every recalled fact or that future tagging will succeed. The integration uses [Codex's documented hook contract](https://learn.chatgpt.com/docs/hooks), checked 24 Oct 2026. Transcript parsing follows the internal `response_item` format observed with codex-cli 0.164.0; that format can change. Native Windows hook execution has not been verified.
+The ghost appears in hook activity and informational messages (Codex surfaces `systemMessage` as a warning), not as a permanent screen widget. It confirms the stated operation, not that the model used every recalled fact or that future tagging will succeed. The integration uses [Codex's documented hook contract](https://learn.chatgpt.com/docs/hooks). Transcript parsing follows the internal `response_item` format observed with codex-cli 0.164.0; that format can change. Native Windows hook execution has not been verified.
 
-Remove only Codex's hooks with `node <clone>/bin/spookling-memory.js uninstall --harness codex` (add `--scope user` for user hooks). Memory and other hooks remain. The existing optional server-stop prompt still applies.
+Remove only Codex's hooks and MCP entry with `node <clone>/bin/spookling-memory.js uninstall --harness codex` (add `--scope user` for user scope). Memory, other hooks and other MCP servers remain. The existing optional server-stop prompt still applies.
+
+## Updating
+
+**The upgrade path.** On 0.1.x, run `npx spookling init` once. From 0.2 on, run `spookling update`. Each version installs into its own folder, so until one of those runs, your wiring keeps using the old folder (see [After an upgrade](#after-an-upgrade)).
+
+`spookling update [--check] [--version x [--force]]` finds the newest published version (a `fetch` of `https://registry.npmjs.org/spookling/latest` with a 5 s limit, then `npm view spookling version --json`), compares semver, and for a newer one runs `npx --yes spookling@<version> init --update` in your current folder.
+
+Exit codes:
+
+- `0`: done, or already up to date.
+- `1`: offline, no `npx`, or the init failed. It prints `Couldn't check for updates (<reason>). Try again later, or run npx spookling@latest init.` or the manual `npx` line.
+- `2`: a bad `--version`.
+- `10`: with `--check`, an update is available.
+
+More:
+
+- `--version` must be semver (for example `0.2.1`). A version older than the running one is refused without `--force`, because an old version may not know `--update` and then asks its questions.
+- Already on the latest version but the hooks point at an older folder: `update` re-wires to this one.
+
+`init --update` is the non-interactive re-init. It runs the same step functions as `init` with every answer supplied: no cutscene, no prompts, no colour with `NO_COLOR`, fine without a TTY. Where the answers come from:
+
+- **What is wired:** the same files `status` reads: `.claude/settings.json` and `~/.claude/settings.json` (hooks, the ghost's `statusLine`), `.mcp.json`, `~/.claude.json`, the Claude desktop config, Codex `hooks.json` and `config.toml`. User scope is always considered; project scope only for the current folder and only if it is wired. Project installs elsewhere (from `install.json`) are named, not touched.
+- **The choices:** `~/.spookling/install.json` first (harness, scope, project, ghost, tagger, whether the server runs), written atomically with mode `0600` after every successful `init` or `init --update`. Without an entry: the ghost from the status line on disk, the tagger from the running server (`/v1/stats`), else `.memory/keys.env` (`ANTHROPIC_API_KEY` means Haiku), else Jev; the server is started if one is answering or a pid file exists. A key that is in neither your environment nor `keys.env` is not asked for; the step reports it.
+- **The running server:** a pid file whose process is a Spookling server from another version folder (the command line must contain `spookling-memory/<version>/server … serve`) is stopped like `uninstall` does, then started again from the new folder, in the folder it ran from. Any other process is left alone.
+- **Old folders** are never deleted. It ends with the same lines as `status`, without the update notice.
+
+The update notice (`! update   0.2.1 is available. Run spookling update.`, where the version is whatever is newest):
+
+- It appears in `status`.
+- The registry is asked at most once per 24 h with a 2 s limit, and the answer is cached in `~/.spookling/update-check.json`.
+- Nothing runs from hooks, the MCP server or `init`. It is skipped when `CI` is set.
+
+## Backups and restore
+
+`init`, `init --update`, `update` and `uninstall` save each config file they are about to change, before the change: `~/.spookling/backups/<timestamp>/<path, URL-encoded>` (mode `0600`, folder `0700`) plus a `manifest.json` with the original paths and modes. Covered: `~/.claude/settings.json`, `~/.claude.json` (a copy before `claude mcp add-json` / `remove` edits it), the Claude desktop config, `~/.codex/hooks.json`, `~/.codex/config.toml` (also before `codex mcp`), and the project's `.claude/settings.json`, `.mcp.json` and `.codex/*`. `.memory/` is not copied (it holds your keys). One line at the end names the folder. The newest 20 runs stay; a run beyond that is removed only when it is at least 7 days old, so at least 5 always remain. A run that changed nothing leaves no folder.
+
+Before it writes, each file is read again and must still parse: invalid JSON, or TOML that fails a syntax screen (`cli/src/toml-check.js`; there is no TOML library), is refused, named with the reason, and left byte for byte as it was. Merges touch only Spookling's keys: `enabledPlugins`, `extraKnownMarketplaces`, `theme`, `model`, `permissions` and the rest survive (tested).
+
+`spookling restore` has two forms:
+
+- `spookling restore` lists the runs and their files.
+- `spookling restore <timestamp>` shows each file as `differs from the current file`, `same as now` or `missing now`, and asks `[y/N]` (no is the default; without a terminal it needs `--yes`). It then backs up the current versions as a new run and puts the files back with their original modes. It will not write through a symlink.
+
+## After an upgrade
+
+Each version installs into its own folder, and `init` never touches the old one. Until you re-point them (`npx spookling init` on 0.1.x, `spookling update` from 0.2; see [Updating](#updating)):
+
+- Your hooks, MCP entries (Claude, the desktop app, Codex) and the `spookling` command keep pointing at the old folder, which still works: the memory hooks, and any upload code that version had, keep running as they were.
+- A new version's changes (new MCP tools, title and project fixes) arrive only when those are re-pointed.
+- `status` shows one line, for example `! upgrade  hooks still use 0.1.3. Run spookling update to finish upgrading to 0.2.0.`, in place of "scripts missing". `scripts missing` stays for the real case: wired to this version, but the files are gone.
+- `status` exits 1 while an upgrade is pending.
 
 ## Tested
 
-On 21 Oct 2026, on one PC: WSL2 Ubuntu 24.04 (Node 24.19, uv 0.12.5) and native Windows 11 (Node 24.7, uv 0.9.29, Python 3.12.12 fetched by uv).
+Run by hand on one PC: WSL2 Ubuntu 24.04 (Node 24.19, uv 0.12.5) and native Windows 11 (Node 24.7, uv 0.9.29, Python 3.12.12 fetched by uv).
 
 - WSL: `npm test` and the server suite; `init`, `status` and `uninstall` in both scopes, in a sandbox home.
-- Windows: `node --test test/hooks.test.js` (18 of 18) and the server suite (38 passed, 8 skipped: the `.sh` hooks and a WSL-only path test); `init`, `status` and `uninstall` (project scope) in a temp project, with the hooks and MCP entry it wrote driven the way Claude Code drives them, and the server tree gone after uninstall; `init` against the WSL clone through `\\wsl.localhost`.
+- Windows: `node --test test/hooks.test.js` and the server suite (the `.sh` hooks and a WSL-only path test are skipped there); `init`, `status` and `uninstall` (project scope) in a temp project, with the hooks and MCP entry it wrote driven the way Claude Code drives them, and the server tree gone after uninstall; `init` against the WSL clone through `\\wsl.localhost`.
 - Not run: macOS (no Mac to hand), Claude Code itself firing these hooks (that needs a model call), Windows without mirrored networking.
 
-On 24 Oct 2026, WSL only, after the move to one package: `npm test` (27) and the server suite (443) from a fresh clone; `npm pack`, the tarball unpacked, its `server/` and `hooks/` copied out by the wizard's `install()`, `uv sync` there and `serve` answering. CI (`.github/workflows/ci.yml`) runs the same on Linux, macOS and Windows with Node 20 and 24; not run yet.
+After the move to one package, on WSL only: `npm test` and the server suite from a fresh clone; `npm pack`, the tarball unpacked, its `server/` and `hooks/` copied out by the wizard's `install()`, `uv sync` there and `serve` answering. CI (`.github/workflows/ci.yml`) runs the same on Linux, macOS and Windows with Node 18, 20 and 24.
 
 ## Develop
 
 From the repo root (`package.json` is there, so `npm pack` ships `bin/`, `cli/src/`, `hooks/` and `server/`):
 
 ```bash
-npm test                                   # node:test, no network (also works from cli/)
+npm test                                   # every cli/test/*.test.js under node:test, no network, inside a real-home guard
 node bin/spookling-memory.js demo --fast   # the whole install, dry
 node bin/spookling-memory.js demo --frames 3
 npm pack --dry-run                         # what the package ships
 ```
 
+`npm test` runs `cli/test/run-suite.mjs`: it records the size and mtime of your real `~/.claude/settings.json`, `~/.codex/hooks.json` and `~/.codex/config.toml`, the number of test-looking paths (`/var/folders`, `spk-…`) in `~/.claude.json` (which Claude Code rewrites on its own, so only that count is compared) and the runs in `~/.spookling/backups`, and fails the run if a test changed any of them. Tests that write wiring must point `HOME` at a temp folder.
+
 `hooks/package.json` says `"type": "commonjs"`: the root one says `module`, and the hooks use `require`.
 
-The ghost is generated from `brand/logos/ghost-mark.png`, not drawn by hand: `python3 cli/tools/make-ghost.py` (Pillow) writes `src/ghost-sprite.js` (38 x 40 pixels, 20 text rows, downsampled from the logo with hand-placed eyes and smile; and two small ghosts drawn by hand in the script, 13 x 14 and 19 x 20, since a downsample that small turns the face into a smudge; 4 tail frames each, only the lilac streaks move) and renders them back to PNG in `renders/` beside the logo, to check by eye. `python3 cli/tools/render-frames.py` (POSIX) replays the CLI's own output through a small terminal interpreter and saves `renders/cutscene-frame.png`, `renders/cutscene-end.png` and `renders/wizard-frame.png` (80 x 24, 800 x 480 px), and `renders/wizard-frame-30.png` (80 x 30, 800 x 600 px); `raw FILE OUT 120x30` renders any byte stream at another size, with emoji in Noto Color Emoji. `node cli/tools/ghost-screen.mjs pixel 80 24` prints a Claude Code screen with the real status line and transcript wording, for `raw`; `renders/ghost-status-line.png` came from it. None of these tools ship in the package.
+The ghost is generated from `brand/logos/ghost-mark.png`, not drawn by hand. None of these tools ship in the package:
+
+- `python3 cli/tools/make-ghost.py` (Pillow) writes `src/ghost-sprite.js`: 38 x 40 pixels, 20 text rows, downsampled from the logo with hand-placed eyes and smile; and two small ghosts drawn by hand in the script, 13 x 14 and 19 x 20, since a downsample that small turns the face into a smudge; 4 tail frames each, only the lilac streaks move. It renders them back to PNG in `renders/` beside the logo, to check by eye.
+- `python3 cli/tools/render-frames.py` (POSIX) replays the CLI's own output through a small terminal interpreter and saves `renders/cutscene-frame.png`, `renders/cutscene-end.png` and `renders/wizard-frame.png` (80 x 24, 800 x 480 px), and `renders/wizard-frame-30.png` (80 x 30, 800 x 600 px). `raw FILE OUT 120x30` renders any byte stream at another size, with emoji in Noto Color Emoji.
+- `node cli/tools/ghost-screen.mjs pixel 80 24` prints a Claude Code screen with the real status line and transcript wording, for `raw`; `renders/ghost-status-line.png` came from it.
+
+## Contributing / local development
+
+- `SPOOKLING_INIT_PORT` points the wizard's server probes at another port; the tests use it so they never talk to a real server on 7447.
+- `SPOOKLING_NO_UPDATE_CHECK=1` turns off the update check (`CI` and `node --test` do too).
