@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import http from 'node:http';
-import { tmpdir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpHome } from './helpers.mjs';
 import { addHooks, addStatusLine, hookHandlers, isOurStatus, removeHooks, removeStatusLine, statusCommand } from '../src/hooks.js';
 
 const HOOKS = fileURLToPath(new URL('../../hooks/', import.meta.url));
@@ -16,7 +16,7 @@ const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
 // a project with .memory and a home of its own, so nothing touches the real ~/.memory
 function project(pulse) {
-  const d = mkdtempSync(join(tmpdir(), 'spk-ghost-'));
+  const d = tmpHome('spk-ghost-');
   mkdirSync(join(d, '.memory'));
   if (pulse) writeFileSync(join(d, '.memory', 'pulse.json'), JSON.stringify({ at: Date.now(), session: 's1', up: true, ...pulse }));
   return d;
@@ -52,7 +52,7 @@ test('statusLine: yours runs first through --then, keeps its own keys, and comes
 });
 
 test('statusLine: the shell hands status-line.js your command unchanged (sh)', { skip: process.platform === 'win32' && 'POSIX sh' }, () => {
-  const prev = "printf '%s|' \"$HOME\" it's `x` $(y)", d = mkdtempSync(join(tmpdir(), "spk-it's $dir-"));
+  const prev = "printf '%s|' \"$HOME\" it's `x` $(y)", d = tmpHome("spk-it's $dir-");
   writeFileSync(join(d, 'status-line.js'), 'console.log(JSON.stringify(process.argv.slice(2)))');
   const r = spawnSync('sh', ['-c', statusCommand(d, prev, path.posix)], { encoding: 'utf8' });
   assert.deepEqual(JSON.parse(r.stdout), ['--then', prev], r.stderr);
@@ -96,7 +96,7 @@ test('the ghost line takes under 50 ms beyond starting node', () => {
 });
 
 test('status reports the ghost; uninstall takes it out and puts your status line back', () => {
-  const d = mkdtempSync(join(tmpdir(), 'spk-ghost-wiz-'));
+  const d = tmpHome('spk-ghost-wiz-');
   const url = (f) => JSON.stringify(new URL(`../src/${f}`, import.meta.url).href);
   const script = `
     import assert from 'node:assert/strict';
@@ -178,13 +178,13 @@ test('PreCompact and Stop: a pulse each, nothing printed; a dead server is "asle
     const r = await hook(f, 'http://127.0.0.1:9', project(), { prompt: 'hi' });
     assert.deepEqual([r.code, r.out, r.pulse.up], [0, '', false], f);
   }
-  const bare = mkdtempSync(join(tmpdir(), 'spk-bare-'));
+  const bare = tmpHome('spk-bare-');
   await hook('stop.js', 'http://127.0.0.1:9', bare, {});
   assert.ok(!existsSync(join(bare, '.memory')), 'a hook never creates .memory');
 });
 
 test('user scope: a project without .memory uses ~/.memory, for the hooks and the status line alike', async () => {
-  const home = project(), work = mkdtempSync(join(tmpdir(), 'spk-work-'));
+  const home = project(), work = tmpHome('spk-work-');
   await new Promise((res) => {
     const c = spawn(process.execPath, [join(HOOKS, 'stop.js')], { env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, SPOOKLING_MEMORY_URL: 'http://127.0.0.1:9' } });
     c.on('close', res);
@@ -242,7 +242,7 @@ test('the ghost: plain cells, no half blocks, where the font has none', () => {
 });
 
 test('Terminal.app with Monaco gets plain cells, read from its own settings', { skip: process.platform !== 'darwin' && 'plutil and defaults are macOS' }, () => {
-  const d = mkdtempSync(join(tmpdir(), 'spk-term-'));
+  const d = tmpHome('spk-term-');
   const plist = join(d, 'com.apple.Terminal.plist');
   const font = (name) => Buffer.from(`bplist00\x00\x00${name}\x00NSFont\x00`, 'latin1').toString('base64');
   const write = (name) => writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>

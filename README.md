@@ -247,6 +247,8 @@ In Codex, the pixel ghost shows in the hook messages: `ready` after a successful
 
 Spookling Memory is out as `spookling` 0.1.3, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick.
 
+**Upgrading.** On 0.1.x, run `npx spookling init` once. From 0.2 on, run `spookling update`. Why: [Updating](#updating).
+
 ```bash
 npx spookling init
 ```
@@ -263,7 +265,11 @@ npx spookling init --scope user    # every project you open in Claude Code
 npx spookling demo                 # the whole install, answered for you; writes nothing
 npx spookling status               # is the server up, what is wired, which tagger
 npx spookling uninstall            # remove the hooks and the MCP entry; keep .memory/
+npx spookling update [--check] [--version x [--force]]   # install the newest version and re-wire what you already set up
+npx spookling restore [<timestamp>] [--yes]   # list the config backups, or put one run's files back
 ```
+
+`update` is explained under [Updating](#updating) and `restore` under [Backups and restore](#backups-and-restore); `cli/README.md` has the flags.
 
 You need Node 18 or newer and Claude Code v2.1.139 or later. The server runs on uv, which fetches Python 3.12 if you do not have it.
 
@@ -296,9 +302,45 @@ To switch, stop the server (`uninstall` offers to) and run `init` again. `status
 | `~/.spookling-memory/<version>/` (`%LOCALAPPDATA%\spookling-memory\<version>\` on Windows) | the server and the hooks, copied from the package; `uv sync` makes the server's `.venv` there |
 | `.claude/settings.json` (project) or `~/.claude/settings.json` (user) | three hooks merged in: `PreCompact`, `UserPromptSubmit`, `Stop`; and the ghost's `statusLine`, if you said yes |
 | `.mcp.json` (project) or Claude Code's user MCP list (user) | the `spookling-memory` server and its tools, `memory_retrieve` and `memory_reset` among them |
+| `.codex/config.toml` (project) or `~/.codex/config.toml` (user), Codex only | the `spookling-memory` MCP server as `[mcp_servers.spookling-memory]`, so Codex can call the memory tools. Codex loads a project file only for a trusted project |
 | `.memory/` | your memory, your tagger's key in `keys.env`, the server's pid and log, and a `.gitignore` that keeps the key and the caches out of git |
 
 Every other key in those files is kept. A file that is not valid JSON is left alone and reported, never overwritten. In an interactive session, Claude Code runs the hooks once you trust the folder, and asks you once to approve a project `.mcp.json` server. `/hooks` and `/mcp` show what is wired. With the server down, the hooks print nothing and exit 0 within about a second, so a prompt is never blocked.
+
+### Updating
+
+```bash
+spookling update                 # install the newest version and re-wire everything you already set up
+spookling update --check         # only report: exit 0 when current, 10 when an update is available
+spookling update --version 0.2.1 [--force]   # a specific version (0.2.1 is just an example); going backwards needs --force
+```
+
+From 0.2 on, `spookling update` is the way to upgrade. 0.1.x has no `update` command, so on 0.1.x run `npx spookling init` once first. Either way, each version installs into its own folder under `~/.spookling-memory/` and `init` leaves the old one in place, so your hooks and MCP entries keep using the old folder (it still works) until you do.
+
+`update` asks the npm registry for the latest `spookling`, then runs that version's own `npx --yes spookling@<version> init --update`: the init steps again, with no questions.
+
+- **What it repeats:** what is already wired (Claude Code and/or Codex, project and/or user scope, the ghost on or off, the tagger, whether the server runs). It reads that from `~/.spookling/install.json` (written, mode `0600`, after every successful `init`) and from the hooks, MCP entries and server actually on disk.
+- **Outside a wired project:** it updates your user scope only and names the project installs it knows about.
+- **The running server:** one still running from an older version folder is stopped (only when its command line shows it is ours) and started again from the new one.
+- **Old versions:** their folders are never deleted. It prints `Old version kept in ~/.spookling-memory/<old> (safe to delete once you're happy).`
+- **Afterwards:** restart open Claude Code and Codex sessions.
+- **Offline, or no `npx`:** it prints the manual route and exits 1. `npx spookling@latest init` still works and asks its questions as before.
+
+`status` prints `! update   <version> is available. Run spookling update.` The check runs at most once every 24 hours with a 2 second limit, is cached in `~/.spookling/update-check.json`, never runs from hooks, the MCP server or `init`, and is skipped in CI.
+
+### Backups and restore
+
+Before `init`, `init --update`, `update` or `uninstall` changes a config file, it copies the file to `~/.spookling/backups/<timestamp>/` (files `0600`, folder `0700`) and ends with `Backups of the files I changed: ~/.spookling/backups/<timestamp>/`. That covers `~/.claude/settings.json`, `~/.claude.json` (before `claude mcp` edits it), the Claude desktop config, `~/.codex/hooks.json` and `config.toml`, and a project's `.claude/settings.json`, `.mcp.json` and `.codex/` files. The newest 20 runs are kept; an older run is removed only once it is 7 days old. Files are re-read right before they are written, and a JSON or TOML file that does not parse is refused and left exactly as it was, with the file and the reason named. Only Spookling's own keys are merged in or out.
+
+```bash
+spookling restore                      # list the backup runs and their files
+spookling restore 20261104-183005      # an example timestamp: show what would change, ask, then restore (current versions are backed up first)
+spookling restore 20261104-183005 --yes   # without a terminal
+```
+
+### Upgrading by hand
+
+Until `init` or `update` re-points them, a new version's changes (new MCP tools, title and project fixes) do not reach your hooks and MCP entries. In the meantime `status` exits 1 and shows a line like `! upgrade  hooks still use 0.1.3. Run spookling update to finish upgrading to 0.2.0.` (the versions are an example). On 0.1.x, finish with `npx spookling init`, as in [Updating](#updating).
 
 ### Where it runs
 
@@ -386,7 +428,7 @@ Reset is not delete. If you need data gone for good, that is the purge command, 
 
 ## Straight talk
 
-- **Out now, as 0.1.0 early access.** The package is published. The Claude Code wiring of the decision rule's re-ask is still in progress, and our compaction test cannot yet show the survivor block's effect. The numbers come from our benchmark runner, build 6.0, re-scored with the v2.1 rule (the "derive it" re-asks re-run, the look-again re-asks pending).
+- **Out now, in early access.** The package is published. The Claude Code wiring of the decision rule's re-ask is still in progress, and our compaction test cannot yet show the survivor block's effect. The numbers come from our benchmark runner, build 6.0, re-scored with the v2.1 rule (the "derive it" re-asks re-run, the look-again re-asks pending).
 - **Where search still beats us:** time questions on LongMemEval (92 vs 106 of 127; the fix is built and in the pending run) and fewer refusals (42 to our 57). Our weakest spot is two-hop by a person's other name, 12 of 35.
 - **Tagging costs money up front.** On a one-question-per-history benchmark that made our run cost 2.2x search; where thirty questions share a history, 1.06x. Real use reads each memory many times.
 - **The leaders self-report 94 to 96%** with the benchmarks' yes/no judges and their own readers. We score with a strict judge; we will publish a lenient-judge pass beside it. Our fixes were made after seeing the misses on every suite here; a held-out split is next.

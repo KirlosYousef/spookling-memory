@@ -1,0 +1,15 @@
+# local state and tooling
+.claude/
+.mcp.json
+.memory/
+
+# node
+node_modules/
+*.tgz
+
+# python (server/.gitignore also covers its own .venv, caches and *.spookling)
+__pycache__/
+.venv/
+
+# macOS
+.DS_Store
