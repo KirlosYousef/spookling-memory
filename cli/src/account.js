@@ -146,8 +146,27 @@ async function chooseDefaultOrg({ client, token, home, write, choose }) {
   say(write, `Default org: ${clean(org.name)}`);
 }
 
+const FRAMES = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+
+// One updating line (spinner and count) while `work` runs; only on a terminal, nothing at all otherwise.
+// The line is cleared before this returns or throws, and the timer always stops so the process can exit.
+export async function withProgress({ write, tty, label, total, interval = 90 }, work) {
+  if (!tty) return work(() => {});
+  let done = 0, frame = 0;
+  const draw = () => write(`\r\x1b[2K${FRAMES[frame++ % FRAMES.length]} ${label}… ${done}/${total}`);
+  draw();
+  const timer = setInterval(draw, interval);
+  timer.unref?.();
+  try {
+    return await work((n) => { done = Math.min(n, total); draw(); });
+  } finally {
+    clearInterval(timer);
+    write('\r\x1b[2K');
+  }
+}
+
 // Offer to upload what is already logged. Never throws and never changes the login result.
-async function backfill({ home, cwd, env, cloud, write, confirm }) {
+async function backfill({ home, cwd, env, cloud, write, confirm, tty = false }) {
   try {
     const logs = localLogs({ home, cwd });
     const sids = pastSessions(logs, home);
@@ -161,11 +180,15 @@ async function backfill({ home, cwd, env, cloud, write, confirm }) {
     }
     let pushed = 0, queued = false;
     const notes = [];
-    for (const log of logs) {
-      const r = await pushFromLog({ logPath: log.path, home, env, cloud, project: log.project, log: (m) => notes.push(m) });
-      pushed += r.pushed || 0;
-      if (r.queued) queued = true;
-    }
+    await withProgress({ write, tty, label: 'Uploading past sessions', total: n }, async (progress) => {
+      for (const log of logs) {
+        const base = pushed;
+        const r = await pushFromLog({ logPath: log.path, home, env, cloud, project: log.project, log: (m) => notes.push(m), onProgress: (d) => progress(base + d) });
+        pushed += r.pushed || 0;
+        progress(pushed);
+        if (r.queued) queued = true;
+      }
+    });
     say(write, `Uploaded ${pushed} ${pushed === 1 ? 'session' : 'sessions'} privately.`);
     if (queued) say(write, `Some turns did not go up${notes.length ? ` (${notes[0]})` : ''}. They retry at the next Stop, or run spookling refresh.`);
     say(write, `Looked in ${logs.map((l) => l.path.replace(home, '~')).join(' and ')}. Other projects upload when their next session stops.`);
@@ -248,13 +271,13 @@ async function pollApproval({ client, started, sleep, now }) {
 }
 
 // Approved: save the token with the origin it came from, then the default org and the offer to upload past sessions. None can fail the login.
-async function finishLogin({ data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write }) {
+async function finishLogin({ data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write, tty }) {
   writeCredentials({ token: data.token, user: data.user ?? null, label: label || hostname(), apiUrl: origin }, { home });
   try { await clearLoginExpired(home); } catch { /* a stale flag is harmless */ }
   const name = clean(data.user?.name || data.user?.email || data.user?.id);
   say(write, name ? `Logged in as ${name}.` : 'Logged in.');
   await chooseDefaultOrg({ client, token: data.token, home, write, choose: choose || term.choose });
-  await backfill({ home, cwd, env, cloud, write, confirm: confirm || term.confirm });
+  await backfill({ home, cwd, env, cloud, write, confirm: confirm || term.confirm, tty });
 }
 
 export async function login({
@@ -282,7 +305,7 @@ export async function login({
   const outcome = await pollApproval({ client, started, sleep, now });
   switch (outcome.status) {
     case 'approved':
-      await finishLogin({ data: outcome.data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write });
+      await finishLogin({ data: outcome.data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write, tty });
       return 0;
     case 'invalid': say(write, 'This login code is no longer valid.'); return 1;
     case 'denied': say(write, 'Login denied.'); return 1;

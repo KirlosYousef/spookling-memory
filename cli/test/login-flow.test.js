@@ -9,6 +9,7 @@ import { CloudError, isNetworkError, networkMessage } from '../src/cloud.js';
 import { readCredentials, writeCredentials } from '../src/credentials.js';
 import { login, logout, orgs, whoami } from '../src/account.js';
 import { accountScope } from '../src/upload-state.js';
+import { pushFromLog } from '../src/push.js';
 
 const BIN = fileURLToPath(new URL('../../bin/spookling-memory.js', import.meta.url));
 const homeOf = () => tmpHome('spk-lf-');
@@ -237,4 +238,38 @@ test('unknown command: message on stderr, help, exit 1; bare, help, -h, --help e
     assert.equal(ok.stderr, '');
     assert.match(ok.stdout, /spookling init/);
   }
+});
+
+// ---- backfill progress ----
+function twoSessions() {
+  const home = homeOf(), proj = join(home, 'work', 'app');
+  mkdirSync(join(proj, '.git'), { recursive: true });
+  writeLog(proj, 's1', 's2');
+  return { home, proj };
+}
+
+test('backfill on a terminal: one spinner line with real counts, cleared before the final message', async () => {
+  const { home, proj } = twoSessions();
+  const r = await run(home, { cwd: proj, tty: true, confirm: async () => true });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /\r\x1b\[2K[⠋-⠏] Uploading past sessions… 0\/2/);
+  assert.match(r.out, /Uploading past sessions… 2\/2\r\x1b\[2KUploaded 2 sessions privately\.\n/);
+});
+
+test('backfill off a terminal: no spinner and no escape codes', async () => {
+  const { home, proj } = twoSessions();
+  const r = await run(home, { cwd: proj, tty: false, confirm: async () => true });
+  assert.doesNotMatch(r.out, /\x1b|\r|Uploading past sessions/);
+  assert.match(r.out, /Uploaded 2 sessions privately\./);
+});
+
+test('pushFromLog reports onProgress(done, total) after each session', async () => {
+  const { home, proj } = twoSessions();
+  writeCredentials({ token: 'spk_t', apiUrl: 'https://api.test' }, { home });
+  const seen = [];
+  const r = await pushFromLog({ logPath: join(proj, '.memory', 'log.jsonl'), home, env: {}, cloud: fake(), log: () => {}, onProgress: (d, t) => seen.push([d, t]) });
+  assert.equal(r.pushed, 2);
+  assert.deepEqual(seen, [[1, 2], [2, 2]]);
+  const bad = await pushFromLog({ logPath: join(proj, '.memory', 'log.jsonl'), home, env: {}, cloud: fake(), log: () => {}, onProgress: () => { throw new Error('x'); } });
+  assert.equal(bad.ok, true);
 });
