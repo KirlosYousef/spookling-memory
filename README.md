@@ -267,9 +267,23 @@ npx spookling status               # is the server up, what is wired, which tagg
 npx spookling uninstall            # remove the hooks and the MCP entry; keep .memory/
 npx spookling update [--check] [--version x [--force]]   # install the newest version and re-wire what you already set up
 npx spookling restore [<timestamp>] [--yes]   # list the config backups, or put one run's files back
+npx spookling login                # sign in in the browser; init never logs in
+npx spookling logout               # forget the saved token
+npx spookling whoami               # who you are, the API and your default org
+npx spookling orgs                 # the orgs you belong to
+npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `--all` to revoke
 ```
 
-`update` is explained under [Updating](#updating) and `restore` under [Backups and restore](#backups-and-restore); `cli/README.md` has the flags.
+`login` is explained below, `update` under [Updating](#updating) and `restore` under [Backups and restore](#backups-and-restore); `cli/README.md` has the flags.
+
+`spookling init` stays offline. `spookling login` is the separate step that connects you to the Spookling app:
+
+- **Sign in.** It opens your browser, shows a code to confirm, and waits for approval. It retries through a flaky network until the code expires.
+- **Default org.** When you approve, it saves a default org: the only one, or the one you pick from your orgs.
+- **Where the token goes.** It talks to the Spookling app (`https://api.spookling.com`) and saves the token in `~/.spookling/credentials.json` (mode `0600`) together with the server that issued it. The token only ever goes to that server (see [Advanced](#advanced)) and is never printed.
+- **The sign-in link** is opened only when it is on the API's host or a `spookling.com` host; on another host it asks first (default No) at a terminal, and is only printed with a warning when there is none.
+- **Tokens.** `spookling tokens` lists the tokens on your account (label, created, last used, and which is this device). `spookling tokens revoke <id>` (a unique prefix of 6 or more characters works) or `--all` revokes them; revoking this device's token, or all, also forgets the saved login.
+- **Afterwards.** `spookling whoami` prints your name and email, the API URL and the default org. If the API cannot be reached, commands say `Couldn't reach <url>`.
 
 You need Node 18 or newer and Claude Code v2.1.139 or later. The server runs on uv, which fetches Python 3.12 if you do not have it.
 
@@ -307,6 +321,14 @@ To switch, stop the server (`uninstall` offers to) and run `init` again. `status
 
 Every other key in those files is kept. A file that is not valid JSON is left alone and reported, never overwritten. In an interactive session, Claude Code runs the hooks once you trust the folder, and asks you once to approve a project `.mcp.json` server. `/hooks` and `/mcp` show what is wired. With the server down, the hooks print nothing and exit 0 within about a second, so a prompt is never blocked.
 
+### Advanced
+
+Most people never need these.
+
+- **A different server** (self-hosted or staging): `spookling login --api-url https://api.example.com`, or set `SPOOKLING_API_URL` for that login. The address is saved with the token.
+- **CI and headless machines:** set `SPOOKLING_TOKEN` to a token from `spookling tokens`, together with an explicit `SPOOKLING_API_URL`. A token from the environment is never paired with a default server.
+- **Safety rule:** a saved login only talks to the server it was issued by. `SPOOKLING_API_URL` cannot redirect it, so a repo's settings or an `.envrc` cannot send your token elsewhere; a command that sees a different value ignores it and says so. Servers must use `https` (plain `http` only for localhost).
+
 ### Updating
 
 ```bash
@@ -326,7 +348,7 @@ From 0.2 on, `spookling update` is the way to upgrade. 0.1.x has no `update` com
 - **Afterwards:** restart open Claude Code and Codex sessions.
 - **Offline, or no `npx`:** it prints the manual route and exits 1. `npx spookling@latest init` still works and asks its questions as before.
 
-`status` prints `! update   <version> is available. Run spookling update.` The check runs at most once every 24 hours with a 2 second limit, is cached in `~/.spookling/update-check.json`, never runs from hooks, the MCP server or `init`, and is skipped in CI.
+`status` and `whoami` print `! update   <version> is available. Run spookling update.` The check runs at most once every 24 hours with a 2 second limit, is cached in `~/.spookling/update-check.json`, never runs from hooks, the MCP server or `init`, and is skipped in CI.
 
 ### Backups and restore
 
