@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { VERSION, apiBase, clean, createCloud, isNetworkError, networkMessage } from './cloud.js';
 import { readCredentials, removeStoredToken, setDefaultOrg, writeCredentials } from './credentials.js';
-import { clearLoginExpired, pushFromLog, projectLog } from './push.js';
+import { clearLoginExpired, pushFromLog, projectLog, uploadedCursors } from './push.js';
 import { orgRecords } from './team.js';
 import { cachedNotice } from './registry.js';
 
@@ -91,16 +91,9 @@ function localLogs({ home = homedir(), cwd } = {}) {
   return found;
 }
 
-function uploadCursors(home) {
-  try {
-    const raw = JSON.parse(readFileSync(join(home, '.spookling', 'upload-state.json'), 'utf8'));
-    return raw?.cursors && typeof raw.cursors === 'object' ? raw.cursors : {};
-  } catch { return {}; }
-}
-
 /** Sessions in these logs with turns the server has not been sent. Reads only. */
 function pastSessions(logs, home) {
-  const cursors = uploadCursors(home);
+  const cursors = uploadedCursors(home); // this account's, on this server: another account's uploads do not count
   const seen = new Set();
   const out = [];
   for (const log of logs) {

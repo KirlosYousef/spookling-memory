@@ -11,6 +11,7 @@ import { login, logout, orgs, whoami } from '../src/account.js';
 import { setProjectAutoShare, setSessionShare, shareStatus } from '../src/share.js';
 import { refresh } from '../src/team.js';
 import { formatShare, main } from '../src/main.js';
+import { accountScope } from '../src/upload-state.js';
 
 const BIN = fileURLToPath(new URL('../../bin/spookling-memory.js', import.meta.url));
 const homeOf = () => tmpHome('spk-lf-');
@@ -133,7 +134,8 @@ test('past sessions: asked, uploaded privately, counted; already uploaded ones a
   writeLog(proj, 's1', 's2');
   writeLog(home, 'h1');
   mkdirSync(join(home, '.spookling'), { recursive: true });
-  writeFileSync(join(home, '.spookling', 'upload-state.json'), JSON.stringify({ cursors: { h1: 1 }, skipped: {}, queue: [], shares: [] }));
+  writeCredentials({ token: 'spk_t', apiUrl: 'https://api.test' }, { home }); // the account the login below ends up as
+  writeFileSync(join(home, '.spookling', 'upload-state.json'), JSON.stringify({ scopeKey: accountScope(home), cursors: { h1: 1 }, skipped: {}, queue: [], shares: [] }));
   const posts = [], asked = [];
   const r = await run(home, { cwd: proj, confirm: async (q, def) => { asked.push([q, def]); return true; } }, fake({ posts }));
   assert.equal(r.code, 0);

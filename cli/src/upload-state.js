@@ -5,7 +5,8 @@ import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unl
 import { createHash, randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { writeFileSecure } from './credentials.js';
+import { apiBase } from './cloud.js';
+import { readCredentials, writeFileSecure } from './credentials.js';
 
 const LOCK_STALE_MS = 30_000; // a lock older than this belongs to a process that died
 const LOCK_WAIT_MS = 2_000; // a hook never waits longer than this for the lock; it queues instead
@@ -30,25 +31,72 @@ export function shareJobs(raw) {
   return jobs;
 }
 
-export function readState(home) {
-  try {
-    const raw = JSON.parse(readFileSync(statePath(home), 'utf8'));
-    return {
-      cursors: raw?.cursors && typeof raw.cursors === 'object' ? raw.cursors : {},
-      skipped: raw?.skipped && typeof raw.skipped === 'object' ? raw.skipped : {},
-      queue: Array.isArray(raw?.queue) ? raw.queue : [],
-      shares: shareJobs(raw?.shares),
-      auth: raw?.auth && typeof raw.auth === 'object' && raw.auth.expired ? { expired: true, at: String(raw.auth.at || '') } : null,
-      forkModes: raw?.forkModes && typeof raw.forkModes === 'object' ? raw.forkModes : {},
-      links: raw?.links && typeof raw.links === 'object' ? raw.links : {},
-    };
-  } catch {
-    return { cursors: {}, skipped: {}, queue: [], shares: [], auth: null, forkModes: {}, links: {} };
-  }
+const blank = () => ({ cursors: {}, skipped: {}, queue: [], shares: [], auth: null, forkModes: {}, links: {} });
+
+function normalize(raw) {
+  return {
+    cursors: raw?.cursors && typeof raw.cursors === 'object' ? raw.cursors : {},
+    skipped: raw?.skipped && typeof raw.skipped === 'object' ? raw.skipped : {},
+    queue: Array.isArray(raw?.queue) ? raw.queue : [],
+    shares: shareJobs(raw?.shares),
+    auth: raw?.auth && typeof raw.auth === 'object' && raw.auth.expired ? { expired: true, at: String(raw.auth.at || '') } : null,
+    forkModes: raw?.forkModes && typeof raw.forkModes === 'object' ? raw.forkModes : {},
+    links: raw?.links && typeof raw.links === 'object' ? raw.links : {},
+  };
 }
 
-export function writeState(home, state) {
-  writeFileSecure(statePath(home), JSON.stringify(state) + '\n');
+const hasData = (st) => Object.keys(st.cursors).length || Object.keys(st.skipped).length || st.queue.length || st.shares.length
+  || Object.keys(st.forkModes).length || Object.keys(st.links).length;
+
+/**
+ * Whose state this is: the API origin a token is pinned to plus the account (the saved user's id; a short hash of the token when
+ * there is no user). A cursor means "the server of this account has these turns", so it is only valid for that pair: after switching
+ * servers or accounts it would point past what the new server holds.
+ */
+export function accountScope(home, env = process.env) {
+  const creds = readCredentials({ home, env });
+  let origin = 'unknown';
+  try { origin = apiBase(env, { home }).toLowerCase().replace(/\/+$/, ''); } catch { /* no usable origin: its own scope */ }
+  const user = creds.user?.id || (creds.token ? `token-${createHash('sha256').update(creds.token).digest('hex').slice(0, 12)}` : 'nobody');
+  return `${origin}|${user}`;
+}
+
+function readRaw(home) {
+  try { return JSON.parse(readFileSync(statePath(home), 'utf8')) || {}; } catch { return {}; }
+}
+
+/**
+ * The state of one account on one server. The file holds the active scope's state at the top level (plus its `scopeKey`), the
+ * others parked under `others`, and, from before state was scoped, whatever an older version left under `legacy`. That old
+ * state cannot be tied to an account, so it is kept, never used, and the current account starts fresh: the next upload asks
+ * the server where it is (seq_gap), so a fresh start is safe.
+ */
+export function readState(home, scope = accountScope(home)) {
+  const raw = readRaw(home);
+  if (raw.scopeKey === scope) return normalize(raw);
+  return raw.others?.[scope] ? normalize(raw.others[scope]) : blank();
+}
+
+/** The unscoped state an older version wrote, kept for reference. */
+export function legacyState(home) {
+  const raw = readRaw(home);
+  return raw.legacy ? normalize(raw.legacy) : null;
+}
+
+// switch the file to `scope`: park the previous active state, take this scope's parked one (or a blank), keep old unscoped data aside
+function activate(raw, scope) {
+  const others = { ...(raw.others || {}) };
+  let legacy = raw.legacy;
+  if (raw.scopeKey === scope) return { scopeKey: scope, ...normalize(raw), others, ...(legacy ? { legacy } : {}) };
+  if (raw.scopeKey) {
+    const parked = normalize(raw);
+    if (hasData(parked)) others[raw.scopeKey] = parked;
+  } else if (hasData(normalize(raw))) {
+    legacy = normalize(raw);
+  }
+  const active = others[scope] ? normalize(others[scope]) : blank();
+  delete others[scope];
+  return { scopeKey: scope, ...active, others, ...(legacy ? { legacy } : {}) };
 }
 
 // open(path, 'wx') is atomic on every platform. A stale file is moved aside first (a rename only one process wins) and then removed.
@@ -79,14 +127,15 @@ async function takeFile(path, { staleMs, waitMs }) {
 
 const drop = (path) => { try { unlinkSync(path); } catch { /* already gone */ } };
 
-/** Read the state again under the lock, let `mutate` change it (and return something), write it back. Throws StateBusy. */
-export async function updateState(home, mutate, { waitMs = LOCK_WAIT_MS } = {}) {
+/** Read the state again under the lock, let `mutate` change this scope's part (and return something), write it back. Throws StateBusy. */
+export async function updateState(home, mutate, { waitMs = LOCK_WAIT_MS, scope = accountScope(home) } = {}) {
   const lock = `${statePath(home)}.lock`;
   if (!(await takeFile(lock, { staleMs: LOCK_STALE_MS, waitMs }))) throw new StateBusy();
   try {
-    const state = readState(home);
+    const file = activate(readRaw(home), scope);
+    const state = normalize(file);
     const result = mutate(state);
-    writeState(home, state);
+    writeFileSecure(statePath(home), JSON.stringify({ ...file, ...state }) + '\n');
     return result;
   } finally {
     drop(lock);

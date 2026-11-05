@@ -8,6 +8,7 @@ import { maskSecrets } from '../src/mask.js';
 import { orgs } from '../src/account.js';
 import { main } from '../src/main.js';
 import { pendingUploads, projectLog } from '../src/push.js';
+import { accountScope } from '../src/upload-state.js';
 import { status } from '../src/wizard.js';
 import { writeCache, emptyCache } from '../src/team.js';
 
@@ -40,7 +41,7 @@ test('status: email, last sync and pending turns come from local files', async (
     o2: { name: 'Two', serverTime: '2026-11-03T11:30:00Z', sharedIds: [], ownSharedIds: [] } };
   writeCache(cache, home);
   writeFileSync(join(home, '.spookling', 'upload-state.json'), JSON.stringify({
-    cursors: {}, skipped: {}, shares: [],
+    scopeKey: accountScope(home), cursors: {}, skipped: {}, shares: [],
     queue: [{ sid: 'a', session: {}, turns: [{ seq: 0 }, { seq: 1 }] }, { sid: 'b', session: {}, turns: [{ seq: 0 }] }],
   }));
   assert.deepEqual(pendingUploads(home), { sessions: 2, turns: 3 });
