@@ -409,7 +409,7 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 - **Private:** only you can see it until you share it.
 - **What goes up:** the cleaned turns from `.memory/log.jsonl`, cut to 4,000 characters each, with secrets masked first. `log.jsonl` itself is not changed.
 - **What is masked:** API keys, AWS key IDs, GitHub tokens, `NAME_TOKEN=value` lines, JWTs, PEM private-key blocks, `scheme://user:pass@` URLs, Slack tokens, Stripe keys. This is pattern matching, so a secret in another shape still gets through.
-- **Network down:** the turns wait in `~/.spookling/upload-state.json` and go up on a later Stop.
+- **Network down:** the turns wait in `~/.spookling/upload-state.json` and go up on a later Stop. Upload progress is remembered per account and server, so switching either starts cleanly; if the server holds fewer turns than expected, the client asks it where it is and resends from there.
 - **Refused for good:** that session is skipped and the rest still upload. This covers one shared with an org you have since left (`org_owned`), one past the 10,000-turn limit, and one over the 10,000-session account limit (which also pauses creating new sessions for that push). `spookling status` names them.
 - **401:** stops the push, and `status` then says `login expired, run spookling login`. Tokens expire after 90 days unused or 365 days after they were issued.
 - **Tokens:** `spookling tokens` lists the tokens on your account (label, created, last used, and which is this device). `spookling tokens revoke <id>` (a unique prefix of 6 or more characters works) or `--all` revokes them; revoking this device's token, or all, also forgets the saved login.
