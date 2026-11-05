@@ -281,7 +281,7 @@ npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `-
 - **Sign in.** It opens your browser, shows a code to confirm, and waits for approval. It retries through a flaky network until the code expires.
 - **Default org.** When you approve, it saves a default org: the only one, or the one you pick from your orgs.
 - **Where the token goes.** It talks to the Spookling app (`https://api.spookling.com`) and saves the token in `~/.spookling/credentials.json` (mode `0600`) together with the server that issued it. The token only ever goes to that server (see [Advanced](#advanced)) and is never printed.
-- **The sign-in link** is opened only when it is on the API's host or a `spookling.com` host; otherwise it is printed with a warning and left unopened.
+- **The sign-in link** is opened only when it is on the API's host or a `spookling.com` host; on another host it asks first (default No) at a terminal, and is only printed with a warning when there is none.
 - **Tokens.** `spookling tokens` lists the tokens on your account (label, created, last used, and which is this device). `spookling tokens revoke <id>` (a unique prefix of 6 or more characters works) or `--all` revokes them; revoking this device's token, or all, also forgets the saved login.
 - **Afterwards.** `spookling whoami` prints your name and email, the API URL and the default org. If the API cannot be reached, commands say `Couldn't reach <url>`.
 
