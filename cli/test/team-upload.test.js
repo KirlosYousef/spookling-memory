@@ -146,7 +146,7 @@ test('auto-share shares a matching project after upload and retries a down share
       status: 200, headers: { 'content-type': 'application/json' },
     });
   };
-  const cloud = createCloud({ env: { SPOOKLING_API_URL: 'http://127.0.0.1:4000' }, fetchImpl, timeoutMs: 2000 });
+  const cloud = createCloud({ env: { SPOOKLING_API_URL: 'http://127.0.0.1:4000' }, home, fetchImpl, timeoutMs: 2000 }); // home: never the developer's real login
   const first = await teamMemoryHook({
     logText: `${line('abc', 'hello')}\n`, home, env: {}, cloud, project: 'spookling-memory', log: () => {},
   });

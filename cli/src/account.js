@@ -19,16 +19,26 @@ const inSpookling = (h) => h === 'spookling.com' || h.endsWith('.spookling.com')
  * API's own host, a spookling.com host while the API is one too, or this machine while the API is. Else null.
  */
 export function safeVerificationUri(uri, apiBaseUrl) {
+  const t = linkTrust(uri, apiBaseUrl);
+  return t.kind === 'trusted' ? t.href : null;
+}
+
+/**
+ * { kind: 'trusted', href }: on the API's host, a spookling.com host, or this machine while the API is.
+ * { kind: 'untrusted', href, host }: a well-formed https (or localhost http) link, with no login in it, on another host: the user may be asked.
+ * { kind: 'invalid' }: anything else (a bad scheme, credentials, not a URL): never opened, never offered.
+ */
+export function linkTrust(uri, apiBaseUrl) {
   try {
     const u = new URL(String(uri));
     const api = new URL(apiBaseUrl);
-    if (u.username || u.password) return null;
-    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOCAL.has(u.hostname))) return null;
+    if (u.username || u.password) return { kind: 'invalid' };
+    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOCAL.has(u.hostname))) return { kind: 'invalid' };
     const same = u.hostname === api.hostname
       || (inSpookling(u.hostname) && inSpookling(api.hostname))
       || (LOCAL.has(u.hostname) && LOCAL.has(api.hostname));
-    return same ? u.href : null;
-  } catch { return null; }
+    return same ? { kind: 'trusted', href: u.href } : { kind: 'untrusted', href: u.href, host: u.hostname };
+  } catch { return { kind: 'invalid' }; }
 }
 
 /** The program and arguments that open a URL. Windows does not go through cmd, so the URL is never parsed as a command line. */
@@ -177,16 +187,22 @@ function loginClient({ cloud, env, home, apiUrl, write }) {
 }
 
 // Print the link and the code, and open the link when it is safe to.
-async function showLink({ started, origin, term, openUrl, write }) {
+async function showLink({ started, origin, term, openUrl, write, tty, confirmOpen }) {
   const link = clean(started.verificationUri);
-  const safe = safeVerificationUri(link, origin);
-  say(write, safe ? 'Opening your browser to sign in to Spookling…'
-    : `Warning: this sign-in link is not on ${new URL(origin).hostname} or spookling.com, so it was not opened. Check it before you visit it:`);
+  const trust = linkTrust(link, origin);
+  const apiHost = new URL(origin).hostname;
+  const ask = trust.kind === 'untrusted' && tty;
+  say(write, trust.kind === 'trusted' ? 'Opening your browser to sign in to Spookling…'
+    : ask ? `This sign-in link is on ${clean(trust.host)}, not on ${apiHost} or spookling.com.`
+      : `Warning: this sign-in link is not on ${apiHost} or spookling.com, so it was not opened. Check it before you visit it:`);
   say(write, `  ${term.paint(term.C.LILAC, link)}`);
   if (started.userCode) say(write, `Confirm this code matches: ${term.paint(term.C.GHOST, clean(started.userCode), true)}`);
+  // another host: only an explicit yes at a terminal opens it. No terminal, no prompt, no open.
+  const go = trust.kind === 'trusted' || (ask && await confirmOpen('Open it in your browser?', false));
+  if (ask && !go) say(write, 'Not opened. Open the link above yourself if you trust it.');
   let opened = true;
-  if (safe) { try { opened = await openUrl(safe); } catch { opened = false; } }
-  if (safe && opened === false) say(write, 'Open the link above in a browser.');
+  if (go) { try { opened = await openUrl(trust.href); } catch { opened = false; } }
+  if (go && opened === false) say(write, 'Open the link above in a browser.');
   say(write, 'Waiting for approval… (Ctrl-C to cancel)');
 }
 
@@ -237,7 +253,7 @@ async function finishLogin({ data, origin, client, label, home, env, cloud, cwd,
 
 export async function login({
   home, env = process.env, cloud, label, sleep = delay, openUrl = openBrowser, now = () => Date.now(),
-  write = (s) => process.stdout.write(s), cwd, confirm, choose, apiUrl,
+  write = (s) => process.stdout.write(s), cwd, confirm, choose, apiUrl, tty = !!(process.stdin.isTTY && process.stdout.isTTY), confirmOpen,
 } = {}) {
   const picked = loginClient({ cloud, env, home, apiUrl, write });
   if (!picked) return 1;
@@ -247,14 +263,16 @@ export async function login({
   try {
     started = await client.deviceStart({ label: label || hostname() });
   } catch (e) {
-    say(write, unreachable(e, env, home) || `Could not start login (${code(e)}).`);
+    // API Gateway answers a wrong address or stage with a bare {"message":"Forbidden"}: no error envelope, so no code
+    if (e?.status === 403 && !e.code) say(write, "Couldn't start login: that address doesn't look like a Spookling API (got 403). Check the URL, including any stage path such as /v1.");
+    else say(write, unreachable(e, env, home) || `Could not start login (${code(e)}).`);
     return 1;
   }
   if (!started?.verificationUri || !started.deviceCode) {
     say(write, 'The API did not return a verification page.');
     return 1;
   }
-  await showLink({ started, origin, term, openUrl, write });
+  await showLink({ started, origin, term, openUrl, write, tty, confirmOpen: confirmOpen || term.confirm });
   const outcome = await pollApproval({ client, started, sleep, now });
   switch (outcome.status) {
     case 'approved':
