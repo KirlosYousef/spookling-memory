@@ -1,0 +1,335 @@
+// Optional sign-in. init never calls this. A 429 while polling waits; it does not log out.
+import { spawn } from 'node:child_process';
+import { hostname } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
+import { VERSION, apiBase, clean, createCloud, isNetworkError, networkMessage } from './cloud.js';
+import { readCredentials, removeStoredToken, setDefaultOrg, writeCredentials } from './credentials.js';
+import { cachedNotice } from './registry.js';
+
+/** The orgs a login belongs to, as { id, name }: active memberships only. */
+function orgRecords(data) {
+  const list = Array.isArray(data?.orgs) ? data.orgs : [];
+  const out = [];
+  for (const item of list) {
+    const org = item?.org && typeof item.org === 'object' ? item.org : item;
+    if (item?.membership?.status && item.membership.status !== 'active') continue;
+    const id = org?.id || item?.orgId;
+    if (typeof id !== 'string' || !id) continue;
+    out.push({ id, name: typeof org?.name === 'string' && org.name ? org.name : id });
+  }
+  return out;
+}
+
+const LOCAL = new Set(['localhost', '127.0.0.1', '[::1]']);
+const inSpookling = (h) => h === 'spookling.com' || h.endsWith('.spookling.com');
+
+/**
+ * The sign-in link comes from the server, so it is opened only when it is https (http on this machine) and its host is the
+ * API's own host, a spookling.com host while the API is one too, or this machine while the API is. Else null.
+ */
+export function safeVerificationUri(uri, apiBaseUrl) {
+  try {
+    const u = new URL(String(uri));
+    const api = new URL(apiBaseUrl);
+    if (u.username || u.password) return null;
+    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOCAL.has(u.hostname))) return null;
+    const same = u.hostname === api.hostname
+      || (inSpookling(u.hostname) && inSpookling(api.hostname))
+      || (LOCAL.has(u.hostname) && LOCAL.has(api.hostname));
+    return same ? u.href : null;
+  } catch { return null; }
+}
+
+/** The program and arguments that open a URL. Windows does not go through cmd, so the URL is never parsed as a command line. */
+export function openerCommand(url, platform = process.platform) {
+  if (platform === 'darwin') return { cmd: 'open', args: [url] };
+  if (platform === 'win32') return { cmd: 'rundll32', args: ['url.dll,FileProtocolHandler', url] };
+  return { cmd: 'xdg-open', args: [url] };
+}
+
+// Resolves true once the opener started, false when it could not (no opener, no display).
+function openBrowser(url) {
+  if (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return Promise.resolve(false);
+  const { cmd, args } = openerCommand(url);
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true });
+      child.on('error', () => resolve(false));
+      child.on('spawn', () => { child.unref(); resolve(true); });
+    } catch { resolve(false); }
+  });
+}
+
+const say = (write, line) => write(`${line}\n`);
+const code = (e) => e?.code || e?.status || 'offline';
+// the unreachable sentence, else what each caller says about its own failure
+const unreachable = (e, env, home) => networkMessage(e, { env, home });
+
+const BACKOFF_MAX_MS = 30_000;
+const DEFAULT_POLL_S = 3; // seconds between polls when the server names none
+const DEFAULT_EXPIRES_S = 600; // a device code's life when the server names none
+
+// term.js installs signal and exit handlers, so it is loaded only when a prompt or colour is wanted
+async function termHelpers() {
+  const t = await import('./term.js');
+  return { paint: t.paint, C: t.C, confirm: t.confirm, choose: t.choose };
+}
+
+// Default org after approval. Never throws; login has already succeeded.
+async function chooseDefaultOrg({ client, token, home, write, choose }) {
+  let list;
+  try { list = orgRecords(await client.listOrgs({ token })); } catch {
+    say(write, 'Could not read your orgs. Run spookling orgs later.');
+    return;
+  }
+  setDefaultOrg(null, { home });
+  if (!list.length) {
+    say(write, 'You are not in an org yet. Sessions upload privately; sharing needs an org.');
+    return;
+  }
+  let org = list[0];
+  if (list.length > 1) {
+    try {
+      const i = await choose('   Which org should be your default?', list.map((o) => clean(o.name)), 0);
+      org = list[i] || list[0];
+    } catch { org = list[0]; }
+  }
+  setDefaultOrg(org, { home });
+  say(write, `Default org: ${clean(org.name)}`);
+}
+
+function loginClient({ cloud, env, home, apiUrl, write }) {
+  let client = cloud;
+  if (!client) {
+    try { client = createCloud({ env, home, loginUrl: apiUrl }); } catch (e) {
+      say(write, e.message);
+      return null;
+    }
+  }
+  try {
+    const origin = typeof client.loginBase === 'function' ? client.loginBase() : typeof client.base === 'function' ? client.base() : apiBase(env, { home });
+    return { client, origin };
+  } catch (e) {
+    say(write, clean(e.message));
+    return null;
+  }
+}
+
+// Print the link and the code, and open the link when it is safe to.
+async function showLink({ started, origin, term, openUrl, write }) {
+  const link = clean(started.verificationUri);
+  const safe = safeVerificationUri(link, origin);
+  say(write, safe ? 'Opening your browser to sign in to Spookling…'
+    : `Warning: this sign-in link is not on ${new URL(origin).hostname} or spookling.com, so it was not opened. Check it before you visit it:`);
+  say(write, `  ${term.paint(term.C.LILAC, link)}`);
+  if (started.userCode) say(write, `Confirm this code matches: ${term.paint(term.C.GHOST, clean(started.userCode), true)}`);
+  let opened = true;
+  if (safe) { try { opened = await openUrl(safe); } catch { opened = false; } }
+  if (safe && opened === false) say(write, 'Open the link above in a browser.');
+  say(write, 'Waiting for approval… (Ctrl-C to cancel)');
+}
+
+// Poll until the code is approved, denied, invalid or expired. A 429 waits; a network error or 5xx backs off and tries again.
+// Returns { status: 'approved', data } | { status: 'denied' | 'invalid' | 'expired' | 'error', error?, down? }.
+async function pollApproval({ client, started, sleep, now }) {
+  const interval = Number(started.interval) > 0 ? Number(started.interval) : DEFAULT_POLL_S;
+  const deadline = now() + (Number(started.expiresIn) > 0 ? Number(started.expiresIn) : DEFAULT_EXPIRES_S) * 1000;
+  let failures = 0, down = false;
+  while (now() < deadline) {
+    await sleep(interval * 1000);
+    if (now() >= deadline) break;
+    let data;
+    try {
+      data = await client.pollToken({ deviceCode: started.deviceCode });
+      failures = 0;
+    } catch (e) {
+      if (e.status === 429) {
+        await sleep((Number(e.retryAfter) > 0 ? Number(e.retryAfter) : interval) * 1000);
+        continue;
+      }
+      if (e.status === 404) return { status: 'invalid' };
+      if (isNetworkError(e) || e.status >= 500) {
+        down = isNetworkError(e) || down;
+        failures += 1;
+        await sleep(Math.min(interval * 1000 * 2 ** failures, BACKOFF_MAX_MS));
+        continue;
+      }
+      return { status: 'error', error: e };
+    }
+    if (data?.status === 'pending') { down = false; continue; }
+    if (data?.status === 'approved' && data.token) return { status: 'approved', data };
+    if (data?.status === 'denied') return { status: 'denied' };
+    return { status: 'expired' };
+  }
+  return { status: 'expired', down };
+}
+
+// Approved: save the token with the origin it came from, then the default org. Neither can fail the login.
+async function finishLogin({ data, origin, client, label, home, term, choose, write }) {
+  writeCredentials({ token: data.token, user: data.user ?? null, label: label || hostname(), apiUrl: origin }, { home });
+  const name = clean(data.user?.name || data.user?.email || data.user?.id);
+  say(write, name ? `Logged in as ${name}.` : 'Logged in.');
+  await chooseDefaultOrg({ client, token: data.token, home, write, choose: choose || term.choose });
+}
+
+export async function login({
+  home, env = process.env, cloud, label, sleep = delay, openUrl = openBrowser, now = () => Date.now(),
+  write = (s) => process.stdout.write(s), choose, apiUrl,
+} = {}) {
+  const picked = loginClient({ cloud, env, home, apiUrl, write });
+  if (!picked) return 1;
+  const { client, origin } = picked;
+  const term = await termHelpers();
+  let started;
+  try {
+    started = await client.deviceStart({ label: label || hostname() });
+  } catch (e) {
+    say(write, unreachable(e, env, home) || `Could not start login (${code(e)}).`);
+    return 1;
+  }
+  if (!started?.verificationUri || !started.deviceCode) {
+    say(write, 'The API did not return a verification page.');
+    return 1;
+  }
+  await showLink({ started, origin, term, openUrl, write });
+  const outcome = await pollApproval({ client, started, sleep, now });
+  switch (outcome.status) {
+    case 'approved':
+      await finishLogin({ data: outcome.data, origin, client, label, home, term, choose, write });
+      return 0;
+    case 'invalid': say(write, 'This login code is no longer valid.'); return 1;
+    case 'denied': say(write, 'Login denied.'); return 1;
+    case 'error': say(write, `Could not reach the API (${code(outcome.error)}).`); return 1;
+    default:
+      say(write, outcome.down ? `Login expired, and ${origin || 'the API'} could not be reached. Check your connection and run spookling login again.` : 'Login expired.');
+      return 1;
+  }
+}
+
+export async function logout({
+  home, env = process.env, cloud, log = (m) => process.stderr.write(`${m}\n`),
+  write = (s) => process.stdout.write(s),
+} = {}) {
+  const creds = readCredentials({ home, env });
+  if (creds.token) {
+    let client = cloud;
+    if (!client) {
+      try { client = createCloud({ env, home, token: creds.token }); } catch { client = null; }
+    }
+    if (client) {
+      try { await client.revokeCurrent({ token: creds.token }); } catch (e) {
+        log(`${unreachable(e, env, home) || `The API was not reached (${code(e)}).`} The saved token was still removed.`);
+      }
+    }
+  }
+  removeStoredToken(home);
+  if (creds.fromEnv) say(write, 'Logged out of the saved token. SPOOKLING_TOKEN is still set in this shell.');
+  else say(write, 'Logged out.');
+  return 0;
+}
+
+export function whoami({ home, env = process.env, write = (s) => process.stdout.write(s) } = {}) {
+  const creds = readCredentials({ home, env });
+  let base = null;
+  try { base = apiBase(env, { home }); } catch { /* the saved user is enough when no URL is stored yet */ }
+  if (!creds.token) {
+    say(write, 'Not logged in.');
+    return 1;
+  }
+  const u = creds.user || {};
+  const who = creds.fromEnv ? 'Logged in with SPOOKLING_TOKEN.'
+    : clean([u.name, u.email].filter(Boolean).join(' ') || u.id || 'Logged in.');
+  say(write, who);
+  if (base) say(write, `API ${base}`);
+  say(write, `Default org ${clean(creds.defaultOrgName || creds.defaultOrgId || 'none')}`);
+  const newer = cachedNotice({ home: home ?? undefined, current: VERSION, env });
+  if (newer) say(write, `! update   ${newer} is available. Run spookling update.`);
+  return 0;
+}
+
+// The orgs this login is an active member of: GET /cli/orgs.
+export async function orgs({
+  home, env = process.env, cloud, write = (s) => process.stdout.write(s),
+} = {}) {
+  const creds = readCredentials({ home, env });
+  if (!creds.token) {
+    say(write, 'Not logged in. Run spookling login.');
+    return 1;
+  }
+  let listed;
+  try {
+    const client = cloud || createCloud({ env, home, token: creds.token });
+    listed = await client.listOrgs({ token: creds.token });
+  } catch (e) {
+    say(write, e.status === 401 ? 'The saved login was rejected. Run spookling login.'
+      : unreachable(e, env, home) || `Could not list orgs (${code(e)}).`);
+    return 1;
+  }
+  const list = orgRecords(listed);
+  if (!list.length) {
+    say(write, 'You are not in an org.');
+    return 0;
+  }
+  for (const o of list) say(write, `${clean(o.id)}  ${clean(o.name)}${o.id === creds.defaultOrgId ? '  (default)' : ''}`);
+  return 0;
+}
+
+const day = (iso) => (typeof iso === 'string' && !Number.isNaN(Date.parse(iso)) ? new Date(iso).toISOString().slice(0, 16).replace('T', ' ') : 'never');
+
+/**
+ * `spookling tokens` lists this account's CLI tokens. `tokens revoke <id>` (a unique prefix of at least 6 characters is enough)
+ * or `tokens revoke --all` revokes. Revoking the token this device uses, or all of them, also forgets the saved login.
+ */
+export async function tokens({
+  home, env = process.env, cloud, revoke = false, id = '', all = false, write = (s) => process.stdout.write(s),
+} = {}) {
+  const creds = readCredentials({ home, env });
+  if (!creds.token) {
+    say(write, 'Not logged in. Run spookling login.');
+    return 1;
+  }
+  const fail = (e) => {
+    say(write, e.status === 401 ? 'The saved login was rejected. Run spookling login.'
+      : e.status === 404 ? 'No token with that id.'
+        : unreachable(e, env, home) || `Could not reach the token list (${clean(code(e))}).`);
+    return 1;
+  };
+  let client = cloud;
+  try { client ||= createCloud({ env, home, token: creds.token }); } catch (e) { say(write, clean(e.message)); return 1; }
+  if (revoke && !all && !id) {
+    say(write, 'usage: spookling tokens revoke <id> | --all');
+    return 2;
+  }
+  try {
+    if (revoke && all) {
+      await client.revokeAllTokens({ token: creds.token });
+      removeStoredToken(home);
+      say(write, 'Revoked every token. This device is logged out too; run spookling login to sign in again.');
+      return 0;
+    }
+    const listed = await client.listTokens({ token: creds.token });
+    const rows = (Array.isArray(listed?.tokens) ? listed.tokens : []).filter((t) => t && typeof t.id === 'string');
+    if (!revoke) {
+      if (!rows.length) say(write, 'No tokens.');
+      for (const t of rows) {
+        say(write, `${clean(t.id)}  ${clean(t.label || '-')}  created ${day(t.createdAt)}  last used ${day(t.lastUsedAt)}${t.current ? '  (this device)' : ''}`);
+      }
+      return 0;
+    }
+    const hits = rows.filter((t) => t.id === id || (id.length >= 6 && t.id.startsWith(id)));
+    if (hits.length !== 1) {
+      say(write, hits.length ? 'That prefix matches more than one token. Use more of the id.' : 'No token with that id.');
+      return 1;
+    }
+    await client.revokeToken({ id: hits[0].id, token: creds.token });
+    if (hits[0].current) {
+      removeStoredToken(home);
+      say(write, 'Revoked this device\'s token and logged out. Run spookling login to sign in again.');
+    } else {
+      say(write, `Revoked ${clean(hits[0].label || hits[0].id)}.`);
+    }
+    return 0;
+  } catch (e) {
+    return fail(e);
+  }
+}
