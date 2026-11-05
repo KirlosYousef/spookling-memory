@@ -429,22 +429,22 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full })
           }
           if (c.kind === 'conflict') {
             const key = turnKey(fresh.turns);
-            let seen = 1;
+            const known = conflictRecord(readState(home, scope).skipped[item.sid]);
+            // the note first: anything that sees the state change can then rely on the note being there
+            log(known && extendsKey(known.key, key) ? `session ${item.sid} skipped: seq_conflict` : `session ${item.sid} seq_conflict; retrying on the next Stop`);
             await persist(ctx, (st) => {
               const prev = conflictRecord(st.skipped[item.sid]);
-              seen = prev && extendsKey(prev.key, key) ? 2 : 1;
-              st.skipped[item.sid] = { reason: 'seq_conflict', key, seen };
+              st.skipped[item.sid] = { reason: 'seq_conflict', key, seen: prev && extendsKey(prev.key, key) ? 2 : 1 };
               st.queue = st.queue.filter((q) => q.sid !== item.sid);
             });
-            log(seen >= 2 ? `session ${item.sid} skipped: seq_conflict` : `session ${item.sid} seq_conflict; retrying on the next Stop`);
           } else if (c.kind === 'permanent') {
+            log(`session ${item.sid} skipped: ${c.reason}`);
             await persist(ctx, (st) => { st.skipped[item.sid] = { reason: c.reason, permanent: true }; st.queue = st.queue.filter((q) => q.sid !== item.sid); });
             if (c.reason === 'session_limit') noNewSessions = true;
-            log(`session ${item.sid} skipped: ${c.reason}`);
           } else if (c.kind === 'auth') {
             // expired or revoked: nothing after this can work. The login is kept; status says to log in again.
-            await persist(ctx, (st) => { st.auth = { expired: true, at: new Date().toISOString() }; queueItem(st, item); });
             log('upload queued: 401 (login expired; run spookling login)');
+            await persist(ctx, (st) => { st.auth = { expired: true, at: new Date().toISOString() }; queueItem(st, item); });
             waiting.push(item);
             stop = true;
           } else {
