@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpHome } from './helpers.mjs';
 import { projectLog, readForks, teamMemoryHook } from '../src/push.js';
+import { accountScope } from '../src/upload-state.js';
 import { writeCredentials } from '../src/credentials.js';
 
 const tmp = () => tmpHome('spk-fk-');
@@ -106,7 +107,7 @@ test('an existing duplicate is linked on its next upload and keeps appending in 
   const { home, logPath } = logged();
   // before this feature: all 7 turns were uploaded, cursor 6
   mkdirSync(join(home, '.spookling'), { recursive: true });
-  writeFileSync(join(home, '.spookling', 'upload-state.json'), JSON.stringify({ cursors: { fork1: 6 }, skipped: {}, queue: [], shares: [] }));
+  writeFileSync(join(home, '.spookling', 'upload-state.json'), JSON.stringify({ scopeKey: accountScope(home), cursors: { fork1: 6 }, skipped: {}, queue: [], shares: [] }));
   const linkOnly = fakeApi();
   await teamMemoryHook({ logPath, home, env: {}, cloud: linkOnly, log: () => {} });
   assert.equal(linkOnly.puts.length, 1, 'one PUT, no new turns');

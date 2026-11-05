@@ -8,6 +8,7 @@ import { maskSecrets } from '../src/mask.js';
 import { orgs } from '../src/account.js';
 import { main } from '../src/main.js';
 import { pendingUploads, projectLog } from '../src/push.js';
+import { accountScope } from '../src/upload-state.js';
 import { status } from '../src/wizard.js';
 
 const homeOf = () => tmpHome('spk-cc-');
@@ -35,7 +36,7 @@ test('status: email and pending turns come from local files', async () => {
   const home = homeOf();
   writeCredentials({ token: 'spk_x', user: { email: 'ada@example.com', name: 'Ada' } }, { home });
   writeFileSync(join(home, '.spookling', 'upload-state.json'), JSON.stringify({
-    cursors: {}, skipped: {}, shares: [],
+    scopeKey: accountScope(home), cursors: {}, skipped: {}, shares: [],
     queue: [{ sid: 'a', session: {}, turns: [{ seq: 0 }, { seq: 1 }] }, { sid: 'b', session: {}, turns: [{ seq: 0 }] }],
   }));
   assert.deepEqual(pendingUploads(home), { sessions: 2, turns: 3 });

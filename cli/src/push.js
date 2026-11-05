@@ -6,11 +6,12 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { CloudError, createCloud } from './cloud.js';
+import { CloudError, clean, createCloud } from './cloud.js';
 import { readCredentials, writeFileSecure } from './credentials.js';
 import { TURN_CAP, maskSecrets } from './mask.js';
-import { StateBusy, claimSession, readState, shareJobs, updateState } from './upload-state.js';
+import { StateBusy, accountScope, claimSession, readState, shareJobs, updateState } from './upload-state.js';
 
+const LIST_PAGES = 20; // pages of your sessions searched for one when the server cannot be asked for it by id
 const BATCH = 200; // turns per POST: the API's page size
 const TITLE_MAX = 120; // the API cuts a longer title
 const PROJECT_MAX = 100; // the API refuses a longer project
@@ -179,8 +180,8 @@ function permanentSkip(raw) {
 }
 
 /** What the last uploads left behind: sessions skipped for good (and why), and whether the token was refused (401). Local only. */
-export function uploadProblems(home = homedir()) {
-  const state = readState(home);
+export function uploadProblems(home = homedir(), env = process.env) {
+  const state = readState(home, accountScope(home, env));
   const skipped = Object.entries(state.skipped)
     .map(([sid, raw]) => ({ sid, reason: permanentSkip(raw) }))
     .filter((x) => x.reason)
@@ -189,13 +190,14 @@ export function uploadProblems(home = homedir()) {
 }
 
 /** After a new login the old 401 no longer applies. */
-export async function clearLoginExpired(home = homedir()) {
-  if (!readState(home).auth) return;
-  await updateState(home, (st) => { st.auth = null; });
+export async function clearLoginExpired(home = homedir(), env = process.env) {
+  const scope = accountScope(home, env);
+  if (!readState(home, scope).auth) return;
+  await updateState(home, (st) => { st.auth = null; }, { scope });
 }
 
-export function skippedSessionIds(home = homedir()) {
-  const state = readState(home);
+export function skippedSessionIds(home = homedir(), env = process.env) {
+  const state = readState(home, accountScope(home, env));
   return Object.entries(state.skipped)
     .filter(([, raw]) => {
       const record = conflictRecord(raw);
@@ -205,9 +207,14 @@ export function skippedSessionIds(home = homedir()) {
     .sort();
 }
 
+/** Session id -> last uploaded seq, for the current account on the current server. Local state only. */
+export function uploadedCursors(home = homedir(), env = process.env) {
+  return { ...readState(home, accountScope(home, env)).cursors };
+}
+
 /** Turns queued for upload that the server has not accepted yet. Local state only; never touches the network. */
-export function pendingUploads(home = homedir()) {
-  const queue = readState(home).queue;
+export function pendingUploads(home = homedir(), env = process.env) {
+  const queue = readState(home, accountScope(home, env)).queue;
   let turns = 0;
   for (const item of queue) turns += Array.isArray(item?.turns) ? item.turns.length : 0;
   return { sessions: queue.length, turns };
@@ -280,6 +287,7 @@ async function deliver(client, item, token, sleep, maxWaitMs, log) {
 // or anything else (the network, a 5xx, rate limiting), which is retried later.
 export function classifyError(e) {
   if (isConflict(e)) return { kind: 'conflict' };
+  if (e instanceof CloudError && e.status === 400 && e.reason === 'seq_gap') return { kind: 'gap' };
   if (e instanceof CloudError) {
     const why = e.reason;
     if ((e.status === 403 && why === 'org_owned') || (e.status === 400 && (why === 'turn_limit' || why === 'session_limit'))) {
@@ -317,106 +325,160 @@ function buildWork(state, projected) {
 const queueItem = (st, item) => { st.queue = [...st.queue.filter((q) => q.sid !== item.sid), item]; };
 
 // A locked change to the state file. A busy lock is reported, not fatal: the next Stop sends what is still unsent.
-async function persist(home, log, mutate) {
-  try { return await updateState(home, mutate); } catch (e) {
+async function persist({ home, scope, log }, mutate) {
+  try { return await updateState(home, mutate, { scope }); } catch (e) {
     if (!(e instanceof StateBusy)) throw e;
     log('upload state busy; will retry on the next Stop');
     return undefined;
   }
 }
 
+// Why a call failed, for upload.log: the code or status, and the server's reason when it gave one. Never the token or any turn text.
+const why = (e) => [e?.code || e?.status || 'offline', e?.reason ? clean(e.reason) : null].filter(Boolean).join(' ');
+
+/**
+ * Where the server is for a session: the last seq it holds, -1 when it has none, null when that cannot be told. Asked after a seq_gap,
+ * which means the saved cursor is ahead of the server (another server or account, or a deleted session).
+ */
+async function serverLastSeq({ client, creds, sid }) {
+  try {
+    let count = null;
+    if (creds.user?.id && typeof client.getSession === 'function') {
+      const data = await client.getSession({ sid: `${creds.user.id}:${sid}`, token: creds.token });
+      count = Number(data?.session?.turnCount);
+    } else if (typeof client.listSessions === 'function') {
+      let cursor;
+      count = 0;
+      for (let page = 0; page < LIST_PAGES; page += 1) {
+        const data = await client.listSessions({ cursor, token: creds.token });
+        const hit = (data?.sessions || []).find((x) => x.clientId === sid);
+        if (hit) { count = Number(hit.turnCount); break; }
+        cursor = data?.nextCursor;
+        if (!cursor) break;
+      }
+    }
+    return Number.isInteger(count) && count >= 0 ? count - 1 : null;
+  } catch (e) {
+    return e instanceof CloudError && e.status === 404 ? -1 : null;
+  }
+}
+
 // Send `items` one session at a time. After each one the cursor (or the skip, or the queue entry) is saved on its own, merged into
-// whatever other uploaders saved meanwhile; a session another uploader is sending right now is left to it.
-async function deliverAll({ client, creds, items, home, sleep, maxWaitMs, log }) {
+// whatever other uploaders saved meanwhile; a session another uploader is sending right now is left to it. `full` maps a session id to
+// its whole projected turns, for the one resend after a seq_gap.
+async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full }) {
+  const { home, scope, log } = ctx;
   let pushed = 0, stop = false, noNewSessions = false;
   const waiting = [];
-  for (const item of items) {
-    if (stop) { waiting.push(item); continue; }
-    const release = await claimSession(home, item.sid);
+  for (const first of items) {
+    if (stop) { waiting.push(first); continue; }
+    const release = await claimSession(home, first.sid);
     if (!release) continue;
-    let fresh = item;
+    let item = first, healed = false;
     try {
-      const now = readState(home);
-      const turns = item.turns.filter((t) => !(typeof now.cursors[item.sid] === 'number' && t.seq <= now.cursors[item.sid]));
-      if (!turns.length && !(item.link && now.links[item.sid] !== item.link)) {
-        await persist(home, log, (st) => { st.queue = st.queue.filter((q) => q.sid !== item.sid); });
-        continue; // someone else already sent it
-      }
-      fresh = { ...item, turns };
-      // the account is full: sessions already on the server still grow, new ones wait for a later Stop
-      if (noNewSessions && typeof now.cursors[item.sid] !== 'number') continue;
-      const data = await deliver(client, fresh, creds.token, sleep || delay, maxWaitMs, log);
-      const last = fresh.turns[fresh.turns.length - 1];
-      await persist(home, log, (st) => {
-        if (last) {
-          const seq = typeof data?.lastSeq === 'number' ? data.lastSeq : last.seq;
-          st.cursors[item.sid] = Math.max(typeof st.cursors[item.sid] === 'number' ? st.cursors[item.sid] : -1, seq);
+      for (;;) {
+        let fresh = item;
+        try {
+          const now = readState(home, scope);
+          const turns = item.turns.filter((t) => !(typeof now.cursors[item.sid] === 'number' && t.seq <= now.cursors[item.sid]));
+          if (!turns.length && !(item.link && now.links[item.sid] !== item.link)) {
+            await persist(ctx, (st) => { st.queue = st.queue.filter((q) => q.sid !== item.sid); });
+            break; // someone else already sent it
+          }
+          fresh = { ...item, turns };
+          // the account is full: sessions already on the server still grow, new ones wait for a later Stop
+          if (noNewSessions && typeof now.cursors[item.sid] !== 'number') break;
+          const data = await deliver(client, fresh, creds.token, sleep || delay, maxWaitMs, log);
+          const last = fresh.turns[fresh.turns.length - 1];
+          await persist(ctx, (st) => {
+            if (last) {
+              const seq = typeof data?.lastSeq === 'number' ? data.lastSeq : last.seq;
+              st.cursors[item.sid] = Math.max(typeof st.cursors[item.sid] === 'number' ? st.cursors[item.sid] : -1, seq);
+            }
+            if (fresh.link) { st.links[item.sid] = fresh.link; st.forkModes[item.sid] = fresh.mode || (st.cursors[item.sid] !== undefined ? 'full' : 'own'); }
+            delete st.skipped[item.sid];
+            st.auth = null;
+            st.queue = st.queue.filter((q) => q.sid !== item.sid);
+          });
+          pushed += 1;
+          const job = shareJob(fresh);
+          if (job) {
+            try { await shareUploaded(client, creds.token, job); } catch (error) {
+              await persist(ctx, (st) => { st.shares = shareJobs([...st.shares, job]); });
+              log(`upload queued: ${why(error)}`);
+              stop = true;
+            }
+          }
+          break;
+        } catch (e) {
+          const c = classifyError(e);
+          if (c.kind === 'gap' && !healed) {
+            // the saved cursor is ahead of the server: ask where the server is, resend from there, once
+            healed = true;
+            const at = await serverLastSeq({ client, creds, sid: item.sid });
+            const all = full.get(item.sid);
+            if (at !== null && all) {
+              log(`session ${item.sid}: the server holds ${at + 1} turns, the saved position was ahead of it; resending from there`);
+              await persist(ctx, (st) => {
+                if (at < 0) delete st.cursors[item.sid]; else st.cursors[item.sid] = at;
+                st.queue = st.queue.filter((q) => q.sid !== item.sid);
+              });
+              item = { sid: item.sid, session: all.session, turns: all.turns, ...(all.session.parentSessionId ? { mode: all.mode, link: linkOf(all) } : {}) };
+              continue;
+            }
+          }
+          if (c.kind === 'conflict') {
+            const key = turnKey(fresh.turns);
+            let seen = 1;
+            await persist(ctx, (st) => {
+              const prev = conflictRecord(st.skipped[item.sid]);
+              seen = prev && extendsKey(prev.key, key) ? 2 : 1;
+              st.skipped[item.sid] = { reason: 'seq_conflict', key, seen };
+              st.queue = st.queue.filter((q) => q.sid !== item.sid);
+            });
+            log(seen >= 2 ? `session ${item.sid} skipped: seq_conflict` : `session ${item.sid} seq_conflict; retrying on the next Stop`);
+          } else if (c.kind === 'permanent') {
+            await persist(ctx, (st) => { st.skipped[item.sid] = { reason: c.reason, permanent: true }; st.queue = st.queue.filter((q) => q.sid !== item.sid); });
+            if (c.reason === 'session_limit') noNewSessions = true;
+            log(`session ${item.sid} skipped: ${c.reason}`);
+          } else if (c.kind === 'auth') {
+            // expired or revoked: nothing after this can work. The login is kept; status says to log in again.
+            await persist(ctx, (st) => { st.auth = { expired: true, at: new Date().toISOString() }; queueItem(st, item); });
+            log('upload queued: 401 (login expired; run spookling login)');
+            waiting.push(item);
+            stop = true;
+          } else {
+            log(isRateLimit(e) ? 'upload waiting: rate limited' : `upload queued: ${why(e)}`);
+            await persist(ctx, (st) => queueItem(st, item));
+            waiting.push(item);
+            stop = true;
+          }
+          break;
         }
-        if (fresh.link) { st.links[item.sid] = fresh.link; st.forkModes[item.sid] = fresh.mode || (st.cursors[item.sid] !== undefined ? 'full' : 'own'); }
-        delete st.skipped[item.sid];
-        st.auth = null;
-        st.queue = st.queue.filter((q) => q.sid !== item.sid);
-      });
-      pushed += 1;
-      const job = shareJob(fresh);
-      if (job) {
-        try { await shareUploaded(client, creds.token, job); } catch (error) {
-          await persist(home, log, (st) => { st.shares = shareJobs([...st.shares, job]); });
-          log(`upload queued: ${error?.code || error?.status || 'offline'}`);
-          stop = true;
-        }
-      }
-    } catch (e) {
-      const c = classifyError(e);
-      if (c.kind === 'conflict') {
-        const key = turnKey(fresh.turns);
-        let seen = 1;
-        await persist(home, log, (st) => {
-          const prev = conflictRecord(st.skipped[item.sid]);
-          seen = prev && extendsKey(prev.key, key) ? 2 : 1;
-          st.skipped[item.sid] = { reason: 'seq_conflict', key, seen };
-          st.queue = st.queue.filter((q) => q.sid !== item.sid);
-        });
-        log(seen >= 2 ? `session ${item.sid} skipped: seq_conflict` : `session ${item.sid} seq_conflict; retrying on the next Stop`);
-      } else if (c.kind === 'permanent') {
-        await persist(home, log, (st) => { st.skipped[item.sid] = { reason: c.reason, permanent: true }; st.queue = st.queue.filter((q) => q.sid !== item.sid); });
-        if (c.reason === 'session_limit') noNewSessions = true;
-        log(`session ${item.sid} skipped: ${c.reason}`);
-      } else if (c.kind === 'auth') {
-        // expired or revoked: nothing after this can work. The login is kept; status says to log in again.
-        await persist(home, log, (st) => { st.auth = { expired: true, at: new Date().toISOString() }; queueItem(st, item); });
-        log('upload queued: 401 (login expired; run spookling login)');
-        waiting.push(item);
-        stop = true;
-      } else {
-        log(isRateLimit(e) ? 'upload waiting: rate limited' : `upload queued: ${e?.code || e?.status || 'offline'}`);
-        await persist(home, log, (st) => queueItem(st, item));
-        waiting.push(item);
-        stop = true;
       }
     } finally {
       release();
     }
   }
   if (waiting.length) {
-    await persist(home, log, (st) => { for (const item of waiting) if (!st.queue.some((q) => q.sid === item.sid)) queueItem(st, item); });
+    await persist(ctx, (st) => { for (const item of waiting) if (!st.queue.some((q) => q.sid === item.sid)) queueItem(st, item); });
   }
   return { pushed, queued: waiting.length };
 }
 
 // Pending shares are retried first. Only the ones that went through are removed, so a share another uploader added is kept.
-async function flushShares({ client, creds, home, log }) {
-  const jobs = readState(home).shares;
+async function flushShares({ client, creds, ctx }) {
+  const jobs = readState(ctx.home, ctx.scope).shares;
   if (!jobs.length) return;
   const done = [];
   for (const job of jobs) {
     try { await shareUploaded(client, creds.token, job); done.push(job); } catch (error) {
-      log(`upload queued: ${error?.code || error?.status || 'offline'}`);
+      ctx.log(`upload queued: ${why(error)}`);
       break;
     }
   }
   if (done.length) {
-    await persist(home, log, (st) => { st.shares = st.shares.filter((j) => !done.some((d) => d.sid === j.sid && d.project === j.project)); });
+    await persist(ctx, (st) => { st.shares = st.shares.filter((j) => !done.some((d) => d.sid === j.sid && d.project === j.project)); });
   }
 }
 
@@ -451,7 +513,9 @@ async function upload({ logPath, logText, home, env, cloud, project, sessionId, 
     }
   }
 
-  const state = readState(home);
+  const scope = accountScope(home, env);
+  const ctx = { home, scope, log };
+  const state = readState(home, scope);
   const only = typeof sessionId === 'string' ? sessionId : '';
   const known = forks ?? (logPath ? readForks(dirname(logPath)) : {});
   const modeOf = (sid) => state.forkModes[sid] ?? (state.cursors[sid] !== undefined ? 'full' : 'own');
@@ -461,13 +525,13 @@ async function upload({ logPath, logText, home, env, cloud, project, sessionId, 
   }));
   const items = buildWork(state, projected);
   if (!client) {
-    if (items.length) await persist(home, log, (st) => { for (const item of items) queueItem(st, item); });
+    if (items.length) await persist(ctx, (st) => { for (const item of items) queueItem(st, item); });
     return { ok: false, queued: items.length > 0, pushed: 0 };
   }
 
-  await flushShares({ client, creds, home, log });
-  const { pushed, queued } = await deliverAll({ client, creds, items, home, sleep, maxWaitMs, log });
-  const pendingShare = readState(home).shares.length > 0;
+  await flushShares({ client, creds, ctx });
+  const { pushed, queued } = await deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full: new Map(projected.map((x) => [x.sid, x])) });
+  const pendingShare = readState(home, scope).shares.length > 0;
   return { ok: queued === 0 && !pendingShare, queued: queued > 0 || pendingShare, pushed };
 }
 

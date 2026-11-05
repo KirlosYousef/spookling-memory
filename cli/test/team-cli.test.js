@@ -8,6 +8,7 @@ import { readCredentials, writeCredentials } from '../src/credentials.js';
 import { createCloud, DEFAULT_API_URL } from '../src/cloud.js';
 import { login, logout, orgs, whoami } from '../src/account.js';
 import { teamMemoryHook } from '../src/push.js';
+import { accountScope } from '../src/upload-state.js';
 import { install, linkCli, status } from '../src/wizard.js';
 import { tmpHome, listen, envelope, readReq, waitFor, runHook, ROOT, modeOf, projectWithLog, hookEnv } from './helpers.mjs';
 
@@ -79,6 +80,7 @@ test('upload uses apiUrl from credentials when SPOOKLING_API_URL is unset and fl
   const { project, logPath } = projectWithLog(home);
   mkdirSync(join(home, '.spookling'), { recursive: true });
   writeFileSync(join(home, '.spookling', 'upload-state.json'), `${JSON.stringify({
+    scopeKey: accountScope(home),
     cursors: {},
     skipped: {},
     queue: [{
@@ -188,6 +190,7 @@ test('the installed stop hook uploads with saved apiUrl and no shell URL', async
   const { project, logPath, before } = projectWithLog(home);
   mkdirSync(join(home, '.spookling'), { recursive: true });
   writeFileSync(join(home, '.spookling', 'upload-state.json'), `${JSON.stringify({
+    scopeKey: accountScope(home),
     cursors: {},
     skipped: {},
     queue: [{
