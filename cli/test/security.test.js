@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -168,6 +168,18 @@ test('credential writes are atomic, private, and refuse a symlink', { skip: proc
   assert.equal(readFileSync(victim, 'utf8'), 'keep me');
   assert.equal(lstatSync(join(home2, '.spookling', 'credentials.json')).isSymbolicLink(), true);
   assert.throws(() => writeFileSecure(join(home2, '.spookling', 'credentials.json'), 'x'), /symlink/);
+});
+
+test('the upload state is written the same way', { skip: process.platform === 'win32' && 'POSIX modes' }, async () => {
+  const { teamMemoryHook } = await import('../src/push.js');
+  const home = homeOf();
+  writeCredentials({ token: 'spk_s', apiUrl: 'https://api.good.test' }, { home });
+  const logText = JSON.stringify({ session_id: 's', role: 'user', ts: '2026-11-03T09:00:00Z', text: 'hello' });
+  const cloud = { upsertSession: async () => { throw Object.assign(new Error('x'), { code: 'ECONNREFUSED' }); } };
+  await teamMemoryHook({ logText, home, env: {}, cloud, log: () => {} });
+  const state = join(home, '.spookling', 'upload-state.json');
+  assert.equal(existsSync(state), true);
+  assert.equal(statSync(state).mode & 0o777, 0o600);
 });
 
 test('every request says who is asking, redirects are refused', async () => {

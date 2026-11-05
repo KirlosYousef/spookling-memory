@@ -15,6 +15,7 @@ import {
   wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath, STATUS_FILE, addStatusLine, removeStatusLine, isOurStatus,
   addCodexMcp, codexConfigPath, codexEntry, codexMcpEntry, codexMcpToml, installVersions, mcpCommand, ourHookCommands, removeCodexMcp,
 } from './hooks.js';
+import { pendingUploads, skipText, skippedSessionIds, uploadProblems } from './push.js';
 import { readCredentials, writeFileSecure } from './credentials.js';
 import { compareVersions, updateAvailable } from './registry.js';
 import { createRun, tilde } from './backup.js';
@@ -349,11 +350,22 @@ async function userMcp(ctx, entry) {
 
 // a clone's .venv and caches stay behind: a .venv belongs to the folder it was made in
 const LEAVE = new Set(['.venv', '__pycache__', '.pytest_cache', '.memory', 'node_modules']);
+// The hooks run from a copied folder, away from this package's "type": "module". Vendor the uploader there as its own module.
+function vendorUploader(from, dir) {
+  const src = join(from, 'cli', 'src');
+  if (!existsSync(join(src, 'push.js'))) return;
+  const lib = join(dir, 'hooks', 'lib');
+  mkdirSync(lib, { recursive: true });
+  writeFileSync(join(lib, 'package.json'), '{ "type": "module" }\n');
+  for (const f of ['cloud.js', 'credentials.js', 'push.js', 'mask.js', 'upload-state.js']) cpSync(join(src, f), join(lib, f));
+}
+
 export function install(from, dir) {
   for (const d of ['server', 'hooks']) cpSync(join(from, d), join(dir, d), { recursive: true, filter: (p) => !LEAVE.has(basename(p)) });
   if (existsSync(join(from, 'package.json'))) cpSync(join(from, 'package.json'), join(dir, 'package.json'));
   if (existsSync(join(from, 'bin'))) cpSync(join(from, 'bin'), join(dir, 'bin'), { recursive: true, filter: (p) => !LEAVE.has(basename(p)) });
   if (existsSync(join(from, 'cli', 'src'))) cpSync(join(from, 'cli', 'src'), join(dir, 'cli', 'src'), { recursive: true, filter: (p) => !LEAVE.has(basename(p)) });
+  vendorUploader(from, dir);
 }
 
 // A command on PATH. The copy in INSTALL_DIR is what it runs, so login is `spookling login`.
@@ -808,7 +820,7 @@ async function stepWire(ctx) {
     let line = '';
     try { line = ghost ? addStatusLine(ctx.dry ? {} : readJson(sp), HOOKS_DIR).statusLine : ''; } catch {} // mergeFile reports it
     await mergeFile(ctx, sp, (s) => (ghost ? addStatusLine(addHooks(s, handlers), HOOKS_DIR) : addHooks(s, handlers)), {
-      what: `hooks: PreCompact, UserPromptSubmit, Stop${ghost ? '; the ghost in the status line' : ''}`,
+      what: `hooks: PreCompact, UserPromptSubmit, Stop, SessionEnd${ghost ? '; the ghost in the status line' : ''}`,
       preview: `${hooksJson(handlers)}${line ? `\n"statusLine": ${JSON.stringify(line, null, 2)}` : ''}\n  merged in; nothing else in the file changes`
         + (line && / --then /.test(line.command) ? '\n  your status line stays first; uninstall puts it back as it was' : ''),
       same: `${rel(ctx, sp)} already has the hooks${ghost ? ' and the ghost' : ''}`,
@@ -904,13 +916,14 @@ async function steps(ctx, { anim, st }) {
   return stepDone(ctx, { anim, st });
 }
 
-// Local files only: the saved login. No network, so it never hangs.
+// Local files only: the saved login and the upload queue. No network, so it never hangs.
 function cloudLine(line, home) {
   try {
     const creds = readCredentials({ home });
     if (!creds.token) return line('cloud', 'not logged in (spookling login)', false);
     const who = creds.fromEnv && !creds.user ? 'SPOOKLING_TOKEN' : (creds.user?.email || creds.user?.name || creds.user?.id || 'saved login');
-    line('cloud', `logged in as ${who}`, true);
+    const { turns, sessions } = pendingUploads(home);
+    line('cloud', `logged in as ${who}; ${turns ? `${turns} turn${turns === 1 ? '' : 's'} in ${sessions} session${sessions === 1 ? '' : 's'} not uploaded yet` : 'no turns waiting to upload'}`, true);
   } catch (e) { line('cloud', `could not read local cloud state: ${e.message}`, false); }
 }
 
@@ -999,6 +1012,15 @@ function keysLine(line, project, tagger) {
     (!need || names.includes(need)) && (!mode || mode === 0o600));
 }
 
+// Sessions the uploader gave up on, and an expired login.
+function uploadLines(line, home) {
+  const held = skippedSessionIds(home);
+  if (held.length) line('upload', `${held.join(', ')} skipped after seq_conflict`, false);
+  const problems = uploadProblems(home);
+  for (const x of problems.skipped) line('upload', `${x.sid} skipped for good: ${skipText(x.reason)}`, false);
+  if (problems.loginExpired && readCredentials({ home }).token) line('login', 'expired, run spookling login (the last upload was refused with 401)', false);
+}
+
 export async function status(project = process.cwd(), get = stats, home = homedir(), { update = {}, noUpdate = false } = {}) {
   const line = (label, text, good) => out(`   ${good ? paint(C.MINT, '✓') : paint(C.LILAC, '!')} ${label.padEnd(8)} ${text}\n`);
   const ctx = newCtx(project);
@@ -1035,6 +1057,7 @@ export async function status(project = process.cwd(), get = stats, home = homedi
     const v = await updateAvailable({ home, current: VERSION, ...update }).catch(() => null);
     if (v) line('update', `${v} is available. Run spookling update.`, false);
   }
+  uploadLines(line, home);
   return s && !upgrade && ((claude && !missing.length) || (codex && codexScript)) ? 0 : 1;
 }
 

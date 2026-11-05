@@ -51,8 +51,11 @@ def nobody() -> str:
 def hook(runner, name, payload, url, **env):
     """As Claude Code's exec form runs it: the interpreter, the script path as one argument."""
     exe, ext = runner
+    # logged out: a developer's real ~/.spookling login would make the hook add its session note to the output
+    base = {k: v for k, v in os.environ.items() if k != "SPOOKLING_TOKEN"}
+    base["HOME"] = base["USERPROFILE"] = str(HOOKS.parent / ".no-home-for-tests")
     return subprocess.run([exe, str(HOOKS / (name + ext))], input=json.dumps(payload), capture_output=True,
-                          text=True, encoding="utf-8", env={**os.environ, "SPOOKLING_MEMORY_URL": url, **env}, timeout=90)
+                          text=True, encoding="utf-8", env={**base, "SPOOKLING_MEMORY_URL": url, **env}, timeout=90)
 
 
 def test_mcp_tools(live, tmp_path, monkeypatch):
