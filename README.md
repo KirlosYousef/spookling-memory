@@ -282,7 +282,7 @@ npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `-
 - **Default org.** When you approve, it saves a default org: the only one, or the one you pick from your orgs.
 - **Past sessions.** If it finds sessions in this project's or your home `.memory/log.jsonl` that were never uploaded, it asks whether to upload them privately. The default is yes, and with no terminal it takes yes after 20 seconds. Other projects upload when their next session stops. A failed upload never fails the login.
 - **Where the token goes.** It talks to the Spookling app (`https://api.spookling.com`) and saves the token in `~/.spookling/credentials.json` (mode `0600`) together with the server that issued it. The token only ever goes to that server (see [Advanced](#advanced)) and is never printed.
-- **The sign-in link** is opened only when it is on the API's host or a `spookling.com` host; otherwise it is printed with a warning and left unopened.
+- **The sign-in link** is opened only when it is on the API's host or a `spookling.com` host; on another host it asks first (default No) at a terminal, and is only printed with a warning when there is none.
 - **Tokens.** `spookling tokens` lists the tokens on your account (label, created, last used, and which is this device). `spookling tokens revoke <id>` (a unique prefix of 6 or more characters works) or `--all` revokes them; revoking this device's token, or all, also forgets the saved login.
 - **Afterwards.** `spookling whoami` prints your name and email, the API URL and the default org. If the API cannot be reached, commands say `Couldn't reach <url>`.
 
