@@ -363,10 +363,16 @@ async function serverLastSeq({ client, creds, sid }) {
   }
 }
 
+// Progress is cosmetic: a callback that throws must never fail an upload.
+function tick(onProgress, done, total) {
+  if (typeof onProgress !== 'function') return;
+  try { onProgress(done, total); } catch { /* ignore */ }
+}
+
 // Send `items` one session at a time. After each one the cursor (or the skip, or the queue entry) is saved on its own, merged into
 // whatever other uploaders saved meanwhile; a session another uploader is sending right now is left to it. `full` maps a session id to
 // its whole projected turns, for the one resend after a seq_gap.
-async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full }) {
+async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, onProgress }) {
   const { home, scope, log } = ctx;
   let pushed = 0, stop = false, noNewSessions = false;
   const waiting = [];
@@ -401,6 +407,7 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full })
             st.queue = st.queue.filter((q) => q.sid !== item.sid);
           });
           pushed += 1;
+          tick(onProgress, pushed, items.length);
           const job = shareJob(fresh);
           if (job) {
             try { await shareUploaded(client, creds.token, job); } catch (error) {
@@ -484,17 +491,17 @@ async function flushShares({ client, creds, ctx }) {
 
 export async function pushFromLog({
   logPath, logText, home = homedir(), env = process.env, cloud, project = '', sessionId = '', forks,
-  sleep, maxWaitMs, timeoutMs,
+  sleep, maxWaitMs, timeoutMs, onProgress,
   log = (m) => process.stderr.write(`${m}\n`),
 } = {}) {
   try {
-    return await upload({ logPath, logText, home, env, cloud, project, sessionId, forks, sleep, maxWaitMs, timeoutMs, log });
+    return await upload({ logPath, logText, home, env, cloud, project, sessionId, forks, sleep, maxWaitMs, timeoutMs, log, onProgress });
   } catch {
     return { ok: false, queued: true, pushed: 0 };
   }
 }
 
-async function upload({ logPath, logText, home, env, cloud, project, sessionId, forks, sleep, maxWaitMs, timeoutMs, log }) {
+async function upload({ logPath, logText, home, env, cloud, project, sessionId, forks, sleep, maxWaitMs, timeoutMs, log, onProgress }) {
   let raw = logText;
   if (raw == null && logPath) {
     try { raw = readFileSync(logPath, 'utf8'); } catch { return { ok: true, pushed: 0 }; }
@@ -530,7 +537,7 @@ async function upload({ logPath, logText, home, env, cloud, project, sessionId, 
   }
 
   await flushShares({ client, creds, ctx });
-  const { pushed, queued } = await deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full: new Map(projected.map((x) => [x.sid, x])) });
+  const { pushed, queued } = await deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, onProgress, full: new Map(projected.map((x) => [x.sid, x])) });
   const pendingShare = readState(home, scope).shares.length > 0;
   return { ok: queued === 0 && !pendingShare, queued: queued > 0 || pendingShare, pushed };
 }
