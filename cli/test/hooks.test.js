@@ -1,13 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import path, { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpHome } from './helpers.mjs';
 import {
-  addHooks, removeHooks, addMcp, removeMcp, hookHandlers, mcpEntry, mcpPath, settingsPath, wiring, readJson,
+  addHooks, removeHooks, addMcp, removeMcp, claudeDesktopConfigPath, hookHandlers, mcpEntry, mcpPath, settingsPath, wiring, readJson,
   isOurs, wslShare, HOOK_FILES, MCP_NAME,
 } from '../src/hooks.js';
 
@@ -26,7 +27,8 @@ const user = {
 test('hooks run in exec form: node, then the script path as one argument; the ghost names the spinner', () => {
   const h = (f, statusMessage) => ({ type: 'command', command: 'node', args: [`/opt/spookling-memory/hooks/${f}`], ...(statusMessage && { statusMessage }) });
   assert.deepEqual(cmds, {
-    PreCompact: h('pre-compact.js', '👻 keeping your rules'), UserPromptSubmit: h('user-prompt-submit.js', '👻 remembering'), Stop: h('stop.js'),
+    PreCompact: h('pre-compact.js', '👻 keeping your rules'), UserPromptSubmit: h('user-prompt-submit.js', '👻 remembering'),
+    Stop: h('stop.js'), SessionEnd: h('stop.js'),
   });
   assert.deepEqual(hookHandlers("/my spookling's $dir/hooks", path.posix).Stop.args, ["/my spookling's $dir/hooks/stop.js"]);
 });
@@ -60,18 +62,22 @@ test('scope: project files, or the user files (CLAUDE_CONFIG_DIR moves them)', (
   assert.equal(mcpPath(p, 'user', {}), join(homedir(), '.claude.json'));
   assert.equal(settingsPath(p, 'user', { CLAUDE_CONFIG_DIR: '/cfg' }), join('/cfg', 'settings.json'));
   assert.equal(mcpPath(p, 'user', { CLAUDE_CONFIG_DIR: '/cfg' }), join('/cfg', '.claude.json'));
+  assert.equal(claudeDesktopConfigPath('/Users/alex', 'darwin'),
+    join('/Users/alex', 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'));
+  assert.equal(claudeDesktopConfigPath('/Users/alex', 'win32', { APPDATA: 'C:\\Users\\alex\\AppData\\Roaming' }),
+    join('C:\\Users\\alex\\AppData\\Roaming', 'Claude', 'claude_desktop_config.json'));
 });
 
 // the real hook scripts as exec form runs them: node and the path as one argument, no shell
 const HOOKS = fileURLToPath(new globalThis.URL('../../hooks/', import.meta.url)); // URL is shadowed above
 const spaced = () => {
-  const d = join(mkdtempSync(join(tmpdir(), 'spk-')), "Jane O'Neil $pace", 'spookling-memory', 'hooks');
+  const d = join(tmpHome('spk-'), "Jane O'Neil $pace", 'spookling-memory', 'hooks');
   mkdirSync(d, { recursive: true });
-  for (const f of [...Object.values(HOOK_FILES), 'pulse.js']) copyFileSync(join(HOOKS, f), join(d, f));
+  for (const f of [...new Set(Object.values(HOOK_FILES)), 'pulse.js']) copyFileSync(join(HOOKS, f), join(d, f));
   return hookHandlers(d);
 };
 // a home and project of their own: a hook writes .memory/pulse.json, never into the real ~/.memory
-const sandbox = () => { const d = mkdtempSync(join(tmpdir(), 'spk-home-')); return { HOME: d, USERPROFILE: d, CLAUDE_PROJECT_DIR: d }; };
+const sandbox = () => { const d = tmpHome('spk-home-'); return { HOME: d, USERPROFILE: d, CLAUDE_PROJECT_DIR: d }; };
 const run = (h, url, input, env = sandbox()) => new Promise((res) => {
   const c = spawn(h.command, h.args, { env: { ...process.env, SPOOKLING_MEMORY_URL: url, ...env } });
   let out = '';
@@ -116,9 +122,9 @@ test('exec form: UserPromptSubmit prints the server reply whole; Stop and PreCom
   assert.ok(seen.every((s) => s[1] === 'application/json' && s[2] === input));
 });
 
-test('addHooks on an empty file adds the three events', () => {
+test('addHooks on an empty file adds the four events', () => {
   const out = addHooks({}, cmds);
-  assert.deepEqual(Object.keys(out.hooks), ['PreCompact', 'UserPromptSubmit', 'Stop']);
+  assert.deepEqual(Object.keys(out.hooks), ['PreCompact', 'UserPromptSubmit', 'Stop', 'SessionEnd']);
   assert.deepEqual(out.hooks.Stop, [{ hooks: [cmds.Stop] }]);
 });
 
@@ -182,6 +188,14 @@ test('MCP entry is added, kept beside others, and removed cleanly', () => {
     env: { SPOOKLING_MEMORY_URL: URL },
   });
   assert.deepEqual(removeMcp(out), cfg);
+  const desktop = { preferences: { sidebarMode: 'chat' }, coworkUserFilesPath: '/Users/alex/Claude' };
+  const absolute = mcpEntry('/opt/spookling-memory/0.1.3/server', URL, '/opt/homebrew/bin/uv');
+  const merged = addMcp(desktop, absolute);
+  assert.equal(merged.preferences.sidebarMode, 'chat');
+  assert.equal(merged.coworkUserFilesPath, desktop.coworkUserFilesPath);
+  assert.equal(merged.mcpServers[MCP_NAME].command, '/opt/homebrew/bin/uv');
+  assert.equal(merged.mcpServers[MCP_NAME].args[2], '/opt/spookling-memory/0.1.3/server');
+  assert.deepEqual(removeMcp(merged).preferences, desktop.preferences);
   assert.deepEqual(addMcp({}, entry), { mcpServers: { [MCP_NAME]: entry } });
   assert.throws(() => addMcp({ mcpServers: [] }, entry));
   assert.deepEqual(removeMcp({}), {});
@@ -191,11 +205,11 @@ test('wiring reports what is in place', () => {
   assert.deepEqual(wiring({}, {}), { events: [], mcp: false });
   const s = addHooks(user, cmds), m = addMcp({}, mcpEntry('/x', URL));
   const w = wiring(s, m);
-  assert.deepEqual([w.events.sort(), w.mcp], [['PreCompact', 'Stop', 'UserPromptSubmit'], true]);
+  assert.deepEqual([w.events.sort(), w.mcp], [['PreCompact', 'SessionEnd', 'Stop', 'UserPromptSubmit'], true]);
 });
 
 test('readJson: missing or empty is {}, broken JSON throws', () => {
-  const d = mkdtempSync(join(tmpdir(), 'spk-'));
+  const d = tmpHome('spk-');
   assert.deepEqual(readJson(join(d, 'nope.json')), {});
   writeFileSync(join(d, 'empty.json'), '\n');
   assert.deepEqual(readJson(join(d, 'empty.json')), {});

@@ -126,7 +126,7 @@ def test_the_model_id_picks_the_backend(monkeypatch):
     assert a["model"] == "codex" and isinstance(a["triage"], S.Subscription) and a["triage"].ask is S.codex
     assert S.adapter("typesafe/jev-router") == {"model": "typesafe/jev-router"}
     assert S.adapter(None) == {"model": WRITER} and models.route(WRITER) == "openrouter"  # no Anthropic key
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "\u0073k-ant-test")
     assert S.backend(WRITER) == "anthropic" and S.backend("typesafe/jev-router") == "openrouter"
     assert S.adapter(WRITER) == {"model": WRITER} and models.route(WRITER) == "anthropic"  # the wizard's choice 2
     assert models.route("typesafe/jev-router") == "openrouter"

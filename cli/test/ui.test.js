@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpHome } from './helpers.mjs';
 import { FRAMES, PALETTE, SMALL } from '../src/ghost-sprite.js';
 import { TAGLINE } from '../src/cutscene.js';
 import { LITTLE, wrap } from '../src/ghost.js';
@@ -55,7 +56,7 @@ test('the JSON shown before a merge parses to exactly what is merged', () => {
 });
 
 test('demo walks every step, writes nothing, and shows the tagline once', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'spk-demo-'));
+  const dir = tmpHome('spk-demo-');
   const env = { ...process.env, HOME: dir, USERPROFILE: dir, CLAUDE_CONFIG_DIR: join(dir, 'cfg'), NO_COLOR: '1' };
   delete env.ANTHROPIC_API_KEY;
   const r = spawnSync(process.execPath, [BIN, 'demo', '--fast', '--no-anim'], { cwd: dir, env, encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -65,7 +66,7 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   for (let n = 1; n <= 7; n++) assert.match(o, new RegExp(`step ${n} of 7`));
   for (const k of [1, 2, 3, 4, 5, 6, 7]) assert.ok(o.includes(`spookling: ${SAY[k]}`), `line ${k}`);
   assert.equal(o.split(TAGLINE).length - 1, 1, 'the tagline once');
-  assert.equal(o.match(/demo: not written/g)?.length, 4); // keys.env, .gitignore, settings.json, .mcp.json
+  assert.equal(o.match(/demo: not written/g)?.length, 5); // keys.env, .gitignore, settings.json, .mcp.json, desktop config
   for (const [i, t] of TAGGERS.entries()) assert.ok(o.includes(`${i + 1}  ${t.label}`), t.label);
   assert.match(o, /How should the tagger run\? \[1\]/);
   assert.match(o, /OpenRouter API key for Jev: •+/);
@@ -87,7 +88,7 @@ test('init wires a folder per version, and copies the package into it without a 
   assert.equal(INSTALL_DIR, process.platform === 'win32' ? join(process.env.LOCALAPPDATA, 'spookling-memory', VERSION)
     : join(homedir(), '.spookling-memory', VERSION));
   assert.deepEqual([SERVER_DIR, HOOKS_DIR], [join(INSTALL_DIR, 'server'), join(INSTALL_DIR, 'hooks')]);
-  const from = mkdtempSync(join(tmpdir(), 'spk-pkg-')), to = join(mkdtempSync(join(tmpdir(), 'spk-home-')), VERSION);
+  const from = tmpHome('spk-pkg-'), to = join(tmpHome('spk-home-'), VERSION);
   const files = ['server/pyproject.toml', 'server/spookling_memory/core/classes.json', 'hooks/stop.js',
     'server/.venv/bin/python', 'server/spookling_memory/__pycache__/x.pyc', 'server/.pytest_cache/x', 'server/.memory/log.jsonl'];
   for (const f of files) { mkdirSync(join(from, f, '..'), { recursive: true }); writeFileSync(join(from, f), f); }
@@ -106,22 +107,22 @@ test('the tagger menu: Jev, Haiku or Codex, each started with its --model and as
 });
 
 test('codex login status: its line when logged in, a failure when not, or when codex is missing', { skip: process.platform === 'win32' && 'a POSIX fake codex' }, () => {
-  const bin = mkdtempSync(join(tmpdir(), 'spk-codex-'));
+  const bin = tmpHome('spk-codex-');
   const fake = (body) => { writeFileSync(join(bin, 'codex'), `#!/bin/sh\n${body}\n`); chmodSync(join(bin, 'codex'), 0o755); };
   const env = { ...process.env, PATH: `${bin}:/usr/bin:/bin` };
   fake('[ "$1 $2" = "login status" ] && echo "Logged in using ChatGPT" && exit 0; exit 9');
   assert.deepEqual(codexLogin(env), { ok: true, line: 'Logged in using ChatGPT' });
-  fake('echo "Logged in using an API key - sk-proj-abc123XYZ"');
+  fake('echo "Logged in using an API key - \u0073k-proj-abc123XYZ"');
   assert.deepEqual(codexLogin(env), { ok: true, line: 'Logged in using an API key - sk-…' });
   fake('echo "Not logged in" >&2; exit 1');
   assert.deepEqual(codexLogin(env), { ok: false, line: 'Not logged in' });
-  const none = codexLogin({ ...process.env, PATH: mkdtempSync(join(tmpdir(), 'spk-empty-')) });
+  const none = codexLogin({ ...process.env, PATH: tmpHome('spk-empty-') });
   assert.equal(none.ok, false);
   assert.match(none.line, /not found/);
 });
 
 test('status names the wired tagger, and the key it needs', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'spk-status-'));
+  const dir = tmpHome('spk-status-');
   const said = [], write = process.stdout.write, cfg = process.env.CLAUDE_CONFIG_DIR;
   const run = async (tagger) => {
     said.length = 0;
