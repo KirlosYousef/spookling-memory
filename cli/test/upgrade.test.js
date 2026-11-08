@@ -11,7 +11,7 @@ import { hookHandlers, installVersions, mcpEntry, addHooks, addMcp } from '../sr
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const WIZARD = new URL('../src/wizard.js', import.meta.url).href;
 const VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
-const OLD = '0.1.2';
+const OLD = '0.1.3';
 
 // `status` in a throw-away HOME: hooks and MCP entries written by the test, the install folder as it is on that machine
 function statusIn({ hooksVersion, mcpVersion, linkVersion, install = false }) {
@@ -52,7 +52,7 @@ test('hooks still wired to the previous version: one upgrade line, no "scripts m
 
 test('only the MCP entry is old: the upgrade line names it, the hooks are checked as before', { skip: process.platform === 'win32' }, () => {
   const { out } = statusIn({ hooksVersion: VERSION, mcpVersion: OLD, install: true });
-  assert.match(out, /! upgrade  MCP entries still use 0\.1\.2\./);
+  assert.match(out, /! upgrade  MCP entries still use 0\.1\.3\./);
   assert.doesNotMatch(out, /scripts/);
 });
 

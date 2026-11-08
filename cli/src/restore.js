@@ -3,10 +3,8 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { backupsDir, createRun, isStamp, listRuns, readManifest, tilde } from './backup.js';
+import { clean } from './cloud.js';
 import { writeFileSecure } from './credentials.js';
-
-/** Text for a terminal: control characters (escape sequences included) go, newlines stay. */
-const clean = (value) => String(value ?? '').replace(/[^\P{C}\n]/gu, '');
 
 const say = (write, line) => write(`${line}\n`);
 const same = (a, b) => { try { return readFileSync(a).equals(readFileSync(b)); } catch { return false; } };

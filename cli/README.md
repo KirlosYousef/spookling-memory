@@ -17,16 +17,21 @@ npx spookling orgs                 # the orgs you belong to, as id and name
 npx spookling tokens               # your CLI tokens: id, label, created, last used, (this device)
 npx spookling tokens revoke <id>   # revoke one (a unique prefix of 6+ characters works); this device's token also forgets the login
 npx spookling tokens revoke --all  # revoke every token, this device included
+npx spookling refresh [--org <id or name>]   # pull the org feeds into ~/.spookling/team-feed.json
+npx spookling sessions [project] [--limit N | --all]   # your uploaded sessions, newest 20 by default: private or shared, and the auto-share rules
+npx spookling share <session id> [--org <id or name>]     # share a session with an org
+npx spookling unshare <session id> [--org <id or name>]   # stop sharing it (all orgs without --org)
+npx spookling autoshare <project> on|off [--org <id or name>] [--backfill]   # share every new session of a project
 ```
 
-`orgs` and `tokens` need a saved login (or `SPOOKLING_TOKEN`, see [Advanced](#advanced)); without one they say so and exit 1. `whoami` exits 1 when logged out. An unknown command prints `Unknown command: <name>` to stderr, then the help, and exits 1; a bare `spookling`, `help`, `-h` and `--help` print the help and exit 0. `orgs` lists the orgs where you are an active member.
+`orgs`, `refresh` and the sharing commands need a saved login (or `SPOOKLING_TOKEN`, see [Advanced](#advanced)); without one they say so and exit 1. `whoami` exits 1 when logged out. An unknown command prints `Unknown command: <name>` to stderr, then the help, and exits 1; a bare `spookling`, `help`, `-h` and `--help` print the help and exit 0. `orgs` lists the orgs where you are an active member; `--org` takes either column. See [Team memory](#team-memory).
 
 `init` never logs in and does not need an account. It installs the hooks and a `spookling` command (`~/.local/bin/spookling`, or `%USERPROFILE%\AppData\Local\spookling-memory\bin\spookling.cmd` on Windows).
 
 `spookling login` and the saved credentials:
 
 - It uses the Spookling app at `https://api.spookling.com`. It saves the token in `~/.spookling/credentials.json` (mode `0600`) with the server that issued it, and sends it to that server only. The rules, and how to choose another server, are under [Advanced](#advanced).
-- Credentials and the login are written to a temp file with mode 0600 and renamed into place; a symlink at the target is refused.
+- Credentials, the upload state and the login are written to a temp file with mode 0600 and renamed into place; a symlink at the target is refused.
 - Every request sends `User-Agent: spookling/<version> (<platform>; node/<version>)` and refuses redirects.
 - Text from the server is stripped of control characters before it is printed. The token is never printed.
 - A login poll that is rate-limited waits and tries again; it does not log you out.
@@ -84,6 +89,8 @@ Windows sessions then log into the WSL project's `.memory/`; the server reads th
 
 ## Flags
 
+- `--org <id or name>` (refresh, share, unshare, autoshare) picks the org. Left out, `share` and `autoshare on` use the default org saved at login (if it is still one of yours), else your only org. `unshare`, `autoshare off` and `refresh` without `--org` cover every org, so a default never leaves a session shared elsewhere.
+- `--limit N` and `--all` (sessions): 20 newest by default, then `Showing 20 of 43. spookling sessions --all for all.` Titles are cut at 80 characters. `--backfill` (autoshare) also shares sessions already uploaded.
 - `--scope project` (default) or `--scope user`, for `init` and `uninstall`. See the table below.
 - `--no-ghost` (init) skips the question about the ghost in the Claude Code status line, and leaves the status line alone.
 - `--no-anim` skips the animation: the wordmark prints as a still and the ghost's lines print as plain text.
@@ -138,7 +145,7 @@ Every write is shown before it happens; answer `n` to skip it. Every command it 
 | `.mcp.json` (project) | `mcpServers.spookling-memory`: stdio, `uv run --project <server> spookling-memory mcp`, with `SPOOKLING_MEMORY_URL` in its `env` |
 | user MCP list (user scope) | the same entry, added with `claude mcp add-json spookling-memory '<entry>' --scope user`. Claude Code keeps it in `~/.claude.json`, a file it writes itself, so the wizard only reads that file. |
 | `.codex/hooks.json` (Codex, project) or `$CODEX_HOME/hooks.json` (Codex, user; default `~/.codex/hooks.json`) | SessionStart, UserPromptSubmit, PreCompact and Stop hooks merged in; existing hooks stay |
-| `.codex/config.toml` (Codex, project) or `$CODEX_HOME/config.toml` (Codex, user; default `~/.codex/config.toml`) | `[mcp_servers.spookling-memory]` with `command`, `args` and an `[mcp_servers.spookling-memory.env]` table: the same `uv run --project <server> spookling-memory mcp` entry Claude gets, so Codex can call the memory tools. User scope runs `codex mcp add` (and `codex mcp remove` first for a stale entry); project scope edits only our own table. Codex reads a project `.codex/config.toml` only for a trusted project. |
+| `.codex/config.toml` (Codex, project) or `$CODEX_HOME/config.toml` (Codex, user; default `~/.codex/config.toml`) | `[mcp_servers.spookling-memory]` with `command`, `args` and an `[mcp_servers.spookling-memory.env]` table: the same `uv run --project <server> spookling-memory mcp` entry Claude gets, so Codex can call the memory and team tools. User scope runs `codex mcp add` (and `codex mcp remove` first for a stale entry); project scope edits only our own table. Codex reads a project `.codex/config.toml` only for a trusted project. |
 
 It also runs `uv sync` in the server folder. `<server>` and `<hooks>` are the `server/` and `hooks/` folders in `~/.spookling-memory/<version>/`, never the package itself (from Windows through `\\wsl.localhost`, the clone's own, on the share). `CLAUDE_CONFIG_DIR` moves the user files, as it does for Claude Code. On Windows, `~` is `%USERPROFILE%`. Every other key in each file is kept. A file that is not valid JSON is left untouched and reported, never overwritten.
 
@@ -210,6 +217,7 @@ Optional, and never part of `init`. The full picture is in the [main README](htt
   - Final refusals, which never block the other sessions: 403 `org_owned` (shared with an org you left), 400 `turn_limit` and 400 `session_limit` (that one also stops creating new sessions in the same push while existing sessions keep growing). They are recorded in `upload-state.json` and `status` lists them.
   - 401: stops the push, keeps your login, and makes `status` print `login expired, run spookling login` until the next login or successful upload.
   - Limits: `project` is cut to 100 characters and `title` to 120, the API's limits.
+- **Share.** `share`, `unshare` and `autoshare` change who can see your own sessions; the org owns what is shared to it. Unsharing cannot un-tell someone who already read it. The MCP tools `memory_share`, `memory_autoshare` and `memory_share_status` call the same code.
 - **Forks.** The server (`hooks.py`, `fork_of`) spots a forked Claude Code transcript: its leading lines carry another `sessionId` (the parent's) than the file's own.
   - Record: `{parent, relation, branched_at, copied}` in `forks.json` beside `log.jsonl` (which keeps the whole conversation, as before).
   - Upload: the uploader reads that file. A new fork sends only the turns after the first `copied`, numbered from 0, and its PUT carries `parentSessionId`, `branchedAtTurn` and `relation`; the title comes from its first new user message.
@@ -217,7 +225,8 @@ Optional, and never part of `init`. The full picture is in the [main README](htt
   - `relation` is `continued` when a `summary` line with a `leafUuid` (or an `isCompactSummary` line) sits at the top and there is no "forked this session" note, else `side_chat`. The continued marker follows Claude Code's format and was not seen in a real file here.
   - Earlier sessions: one uploaded before forks were known keeps its numbering (`forkModes` in `upload-state.json`) and is linked with one PUT.
   - Codex rollouts: no fork marker was found in the local files, so Codex forks upload like any session.
-- **`status` cloud line.** `logged in as <email>; N turns in M sessions not uploaded yet`, or `not logged in`. Local files only (credentials, upload queue), so it cannot hang offline. Pending is the turns queued in `upload-state.json`, not turns Stop has yet to read. It does not change the exit code.
+- **Read.** `team_sessions` and `team_session` (MCP) refresh every org feed when called, then read `~/.spookling/team-feed.json`; if the refresh fails they answer from the cache with a stale note. There is no background pull and no hook injects colleague text. `refresh` does the same pull by hand and keeps the old cache when the API is down. If the feed reports `sharedIdsTruncated` (more than 500 shared sessions in an org), the purge of unshared sessions is skipped for that org. Session reads use pages of 100 and follow `nextAfter`.
+- **`status` cloud line.** `logged in as <email>; last sync <time or never>; N turns in M sessions not uploaded yet`, or `not logged in`. Local files only (credentials, team feed cache, upload queue), so it cannot hang offline. Last sync is the newest org feed time in the cache; pending is the turns queued in `upload-state.json`, not turns Stop has yet to read. It does not change the exit code.
 
 ## Undo
 
@@ -227,7 +236,7 @@ On Windows the stop is forced, so the server cannot remove its temporary copy of
 
 ## Codex
 
-Run `node <clone>/bin/spookling-memory.js init` and select **Codex** (add `--scope user` for user hooks). The wizard uses the same server, `.memory/` folder and tagger choices as Claude Code. It merges native hooks into `.codex/hooks.json` for this project, or `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) for user scope. No Codex executable or source files are patched. The hooks need no MCP entry, but the memory tools do, so `init` also registers the `spookling-memory` MCP server for Codex: `codex mcp add` for user scope, a merge of our own `[mcp_servers.spookling-memory]` table into `.codex/config.toml` for project scope (Codex loads project config only when the project is trusted). Re-running `init` replaces an entry that points at an older version folder; every other line of `config.toml` stays. `status` shows it on a `codex-mcp` line.
+Run `node <clone>/bin/spookling-memory.js init` and select **Codex** (add `--scope user` for user hooks). The wizard uses the same server, `.memory/` folder and tagger choices as Claude Code. It merges native hooks into `.codex/hooks.json` for this project, or `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) for user scope. No Codex executable or source files are patched. The hooks need no MCP entry, but the team tools do, so `init` also registers the `spookling-memory` MCP server for Codex: `codex mcp add` for user scope, a merge of our own `[mcp_servers.spookling-memory]` table into `.codex/config.toml` for project scope (Codex loads project config only when the project is trusted). Re-running `init` replaces an entry that points at an older version folder; every other line of `config.toml` stays. `status` shows it on a `codex-mcp` line.
 
 In Codex, open `/hooks` and review/trust the new commands; project hooks also require a trusted project. Installation does not grant trust. Changed hook definitions require another review. `status` reports configuration and server availability; it does not claim to verify Codex's trust or that hooks ran.
 

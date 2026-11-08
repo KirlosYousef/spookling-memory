@@ -20,6 +20,7 @@ import { readCredentials, writeFileSecure } from './credentials.js';
 import { compareVersions, updateAvailable } from './registry.js';
 import { createRun, tilde } from './backup.js';
 import { checkToml } from './toml-check.js';
+import { readCache } from './team.js';
 
 const WIN = process.platform === 'win32';
 const ROOT = fileURLToPath(new URL('../..', import.meta.url)).replace(/[\\/]$/, '');
@@ -357,7 +358,7 @@ function vendorUploader(from, dir) {
   const lib = join(dir, 'hooks', 'lib');
   mkdirSync(lib, { recursive: true });
   writeFileSync(join(lib, 'package.json'), '{ "type": "module" }\n');
-  for (const f of ['cloud.js', 'credentials.js', 'push.js', 'mask.js', 'upload-state.js']) cpSync(join(src, f), join(lib, f));
+  for (const f of ['cloud.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js']) cpSync(join(src, f), join(lib, f));
 }
 
 export function install(from, dir) {
@@ -916,14 +917,16 @@ async function steps(ctx, { anim, st }) {
   return stepDone(ctx, { anim, st });
 }
 
-// Local files only: the saved login and the upload queue. No network, so it never hangs.
+// Local files only: the saved login, the team feed cache and the upload queue. No network, so it never hangs.
 function cloudLine(line, home) {
   try {
     const creds = readCredentials({ home });
     if (!creds.token) return line('cloud', 'not logged in (spookling login)', false);
     const who = creds.fromEnv && !creds.user ? 'SPOOKLING_TOKEN' : (creds.user?.email || creds.user?.name || creds.user?.id || 'saved login');
+    const times = Object.values(readCache(home).orgs).map((o) => o.serverTime).filter((t) => t && !Number.isNaN(Date.parse(t))).sort();
+    const sync = times.length ? times[times.length - 1] : null;
     const { turns, sessions } = pendingUploads(home);
-    line('cloud', `logged in as ${who}; ${turns ? `${turns} turn${turns === 1 ? '' : 's'} in ${sessions} session${sessions === 1 ? '' : 's'} not uploaded yet` : 'no turns waiting to upload'}`, true);
+    line('cloud', `logged in as ${who}; last sync ${sync || 'never'}; ${turns ? `${turns} turn${turns === 1 ? '' : 's'} in ${sessions} session${sessions === 1 ? '' : 's'} not uploaded yet` : 'no turns waiting to upload'}`, true);
   } catch (e) { line('cloud', `could not read local cloud state: ${e.message}`, false); }
 }
 
