@@ -1,14 +1,104 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpHome } from './helpers.mjs';
 import { CloudError, createCloud } from '../src/cloud.js';
 import { readCredentials, writeCredentials } from '../src/credentials.js';
 import { tokens } from '../src/account.js';
+import { skippedSessionIds, teamMemoryHook, uploadProblems } from '../src/push.js';
 import { main } from '../src/main.js';
+import { status } from '../src/wizard.js';
 
 const homeOf = () => tmpHome('spk-ct-');
+const err = (status, reason, code = 'X') => new CloudError(code, { status, code, reason });
+const logOf = (...ids) => ids.flatMap((id) => [
+  { session_id: id, role: 'user', ts: '2026-11-03T09:00:00Z', text: `hello ${id}` },
+  { session_id: id, role: 'assistant', ts: '2026-11-03T09:00:05Z', text: 'hi' },
+].map((e) => JSON.stringify(e))).join('\n') + '\n';
+
+function api({ puts = {}, posts = {} } = {}) {
+  const calls = [];
+  return {
+    calls,
+    sessions: [],
+    upsertSession: async ({ sid, session }) => { calls.push(`PUT ${sid}`); api.last = session; if (puts[sid]) throw puts[sid]; return {}; },
+    postTurns: async ({ sid, turns }) => { calls.push(`POST ${sid}`); if (posts[sid]) throw posts[sid]; return { lastSeq: turns.at(-1).seq }; },
+    listAutoShare: async () => ({ rules: [] }),
+  };
+}
 const setup = () => { const home = homeOf(); writeCredentials({ token: 'spk_t', user: { name: 'Ada' }, apiUrl: 'https://api.t.test' }, { home }); return home; };
+const push = (home, cloud, ids, extra = {}) => teamMemoryHook({ logText: logOf(...ids), home, env: {}, cloud, log: () => {}, ...extra });
+
+test('403 org_owned skips that session for good and the others still upload', async () => {
+  const home = setup();
+  const cloud = api({ puts: { a: err(403, 'org_owned', 'FORBIDDEN') } });
+  const r = await push(home, cloud, ['a', 'b', 'c']);
+  assert.deepEqual(cloud.calls, ['PUT a', 'PUT b', 'POST b', 'PUT c', 'POST c']);
+  assert.equal(r.ok, true);
+  assert.deepEqual(uploadProblems(home), { skipped: [{ sid: 'a', reason: 'org_owned' }], loginExpired: false });
+  assert.deepEqual(skippedSessionIds(home), [], 'seq_conflict list is unchanged');
+  cloud.calls.length = 0;
+  await push(home, cloud, ['a', 'b', 'c', 'd']);
+  assert.deepEqual(cloud.calls, ['PUT d', 'POST d'], 'a is not tried again, b and c are done');
+});
+
+test('400 turn_limit skips that session for good; the rest go on', async () => {
+  const home = setup();
+  const cloud = api({ posts: { a: err(400, 'turn_limit', 'BAD_REQUEST') } });
+  await push(home, cloud, ['a', 'b']);
+  assert.deepEqual(cloud.calls, ['PUT a', 'POST a', 'PUT b', 'POST b']);
+  assert.deepEqual(uploadProblems(home).skipped, [{ sid: 'a', reason: 'turn_limit' }]);
+});
+
+test('400 session_limit skips it, creates no more new sessions this push, but still appends to existing ones', async () => {
+  const home = setup();
+  const first = api();
+  await push(home, first, ['old']); // old is on the server now
+  const cloud = api({ puts: { n1: err(400, 'session_limit', 'BAD_REQUEST') } });
+  const text = logOf('n1', 'n2', 'old') + JSON.stringify({ session_id: 'old', role: 'user', ts: '2026-11-03T10:00:00Z', text: 'more' }) + '\n';
+  const r = await teamMemoryHook({ logText: text, home, env: {}, cloud, log: () => {} });
+  assert.deepEqual(cloud.calls, ['PUT n1', 'PUT old', 'POST old'], 'n2 was not created');
+  assert.deepEqual(uploadProblems(home).skipped, [{ sid: 'n1', reason: 'session_limit' }]);
+  assert.equal(r.ok, true);
+});
+
+test('401 stops the push, keeps the login, and is remembered until an upload works', async () => {
+  const home = setup();
+  const cloud = api({ puts: { a: err(401, null, 'UNAUTHORIZED') } });
+  const r = await push(home, cloud, ['a', 'b']);
+  assert.deepEqual(cloud.calls, ['PUT a'], 'b was not tried');
+  assert.equal(r.ok, false);
+  assert.equal(r.queued, true);
+  assert.equal(uploadProblems(home).loginExpired, true);
+  assert.equal(readCredentials({ home, env: {} }).token, 'spk_t', 'not logged out automatically');
+  const text = await statusText(home);
+  assert.match(text, /login\s+expired, run spookling login/);
+  const fixed = api();
+  await push(home, fixed, ['a', 'b']);
+  assert.equal(uploadProblems(home).loginExpired, false);
+});
+
+async function statusText(home) {
+  const said = [], write = process.stdout.write;
+  process.stdout.write = (s) => { said.push(String(s)); return true; };
+  try { await status(home, async () => null, home); } finally { process.stdout.write = write; }
+  return said.join('').replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+test('status names sessions skipped for good', async () => {
+  const home = setup();
+  await push(home, api({ puts: { gone: err(403, 'org_owned', 'FORBIDDEN') } }), ['gone']);
+  assert.match(await statusText(home), /upload\s+gone skipped for good: shared with an org you left/);
+});
+
+test('project is cut to 100 characters and title to 120 before upload', async () => {
+  const home = setup();
+  const cloud = api();
+  await teamMemoryHook({ logText: logOf('a').replace('hello a', 'x'.repeat(500)), home, env: {}, cloud, project: 'p'.repeat(300), log: () => {} });
+  assert.equal(api.last.project.length, 100);
+  assert.ok(api.last.title.length <= 120);
+});
 
 test('details.reason survives in a CloudError', async () => {
   const fetchImpl = async () => new Response(JSON.stringify({ success: false, error: { code: 'FORBIDDEN', message: 'x', details: { reason: 'org_owned' } } }), { status: 403 });

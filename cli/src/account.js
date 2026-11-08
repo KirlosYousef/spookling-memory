@@ -1,9 +1,13 @@
 // Optional sign-in. init never calls this. A 429 while polling waits; it does not log out.
 import { spawn } from 'node:child_process';
-import { hostname } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir, hostname } from 'node:os';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { VERSION, apiBase, clean, createCloud, isNetworkError, networkMessage } from './cloud.js';
 import { readCredentials, removeStoredToken, setDefaultOrg, writeCredentials } from './credentials.js';
+import { clearLoginExpired, pushFromLog, projectLog, uploadedCursors } from './push.js';
 import { cachedNotice } from './registry.js';
 
 /** The orgs a login belongs to, as { id, name }: active memberships only. */
@@ -70,6 +74,8 @@ function openBrowser(url) {
   });
 }
 
+const { projectName } = createRequire(import.meta.url)('../../hooks/upload-session.cjs');
+
 const say = (write, line) => write(`${line}\n`);
 const code = (e) => e?.code || e?.status || 'offline';
 // the unreachable sentence, else what each caller says about its own failure
@@ -83,6 +89,38 @@ const DEFAULT_EXPIRES_S = 600; // a device code's life when the server names non
 async function termHelpers() {
   const t = await import('./term.js');
   return { paint: t.paint, C: t.C, confirm: t.confirm, choose: t.choose };
+}
+
+/** The local logs `login` knows about: this project's and the home one, the two places Stop looks. */
+function localLogs({ home = homedir(), cwd } = {}) {
+  const found = [];
+  for (const dir of [cwd, home]) {
+    if (!dir) continue;
+    const path = join(dir, '.memory', 'log.jsonl');
+    if (existsSync(path) && !found.some((f) => f.path === path)) {
+      found.push({ path, project: projectName(dir) });
+    }
+  }
+  return found;
+}
+
+/** Sessions in these logs with turns the server has not been sent. Reads only. */
+function pastSessions(logs, home) {
+  const cursors = uploadedCursors(home); // this account's, on this server: another account's uploads do not count
+  const seen = new Set();
+  const out = [];
+  for (const log of logs) {
+    let text = '';
+    try { text = readFileSync(log.path, 'utf8'); } catch { continue; }
+    for (const s of projectLog(text)) {
+      const last = s.turns.length ? s.turns[s.turns.length - 1].seq : -1;
+      const done = typeof cursors[s.sid] === 'number' && cursors[s.sid] >= last;
+      if (done || seen.has(s.sid)) continue;
+      seen.add(s.sid);
+      out.push(s.sid);
+    }
+  }
+  return out;
 }
 
 // Default org after approval. Never throws; login has already succeeded.
@@ -108,6 +146,58 @@ async function chooseDefaultOrg({ client, token, home, write, choose }) {
   say(write, `Default org: ${clean(org.name)}`);
 }
 
+const FRAMES = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+
+// One updating line (spinner and count) while `work` runs; only on a terminal, nothing at all otherwise.
+// The line is cleared before this returns or throws, and the timer always stops so the process can exit.
+export async function withProgress({ write, tty, label, total, interval = 90 }, work) {
+  if (!tty) return work(() => {});
+  let done = 0, frame = 0;
+  const draw = () => write(`\r\x1b[2K${FRAMES[frame++ % FRAMES.length]} ${label}… ${done}/${total}`);
+  draw();
+  const timer = setInterval(draw, interval);
+  timer.unref?.();
+  try {
+    return await work((n) => { done = Math.min(n, total); draw(); });
+  } finally {
+    clearInterval(timer);
+    write('\r\x1b[2K');
+  }
+}
+
+// Offer to upload what is already logged. Never throws and never changes the login result.
+async function backfill({ home, cwd, env, cloud, write, confirm, tty = false }) {
+  try {
+    const logs = localLogs({ home, cwd });
+    const sids = pastSessions(logs, home);
+    if (!sids.length) return;
+    const n = sids.length;
+    const noun = n === 1 ? 'session' : 'sessions';
+    const yes = await confirm(`Upload your ${n} past ${noun} privately? Only you can see them until you share.`, true);
+    if (!yes) {
+      say(write, 'Skipped. They upload one by one when a session stops.');
+      return;
+    }
+    let pushed = 0, queued = false;
+    const notes = [];
+    await withProgress({ write, tty, label: 'Uploading past sessions', total: n }, async (progress) => {
+      for (const log of logs) {
+        const base = pushed;
+        const r = await pushFromLog({ logPath: log.path, home, env, cloud, project: log.project, log: (m) => notes.push(m), onProgress: (d) => progress(base + d) });
+        pushed += r.pushed || 0;
+        progress(pushed);
+        if (r.queued) queued = true;
+      }
+    });
+    say(write, `Uploaded ${pushed} ${pushed === 1 ? 'session' : 'sessions'} privately.`);
+    if (queued) say(write, `Some turns did not go up${notes.length ? ` (${notes[0]})` : ''}. They retry at the next Stop, or run spookling refresh.`);
+    say(write, `Looked in ${logs.map((l) => l.path.replace(home, '~')).join(' and ')}. Other projects upload when their next session stops.`);
+  } catch (e) {
+    say(write, `Could not upload past sessions (${e?.code || e?.message || 'error'}). They upload at the next Stop; spookling refresh checks the connection.`);
+  }
+}
+
+// The client for this login and the origin it talks to; null (after saying why) when there is none.
 function loginClient({ cloud, env, home, apiUrl, write }) {
   let client = cloud;
   if (!client) {
@@ -180,17 +270,19 @@ async function pollApproval({ client, started, sleep, now }) {
   return { status: 'expired', down };
 }
 
-// Approved: save the token with the origin it came from, then the default org. Neither can fail the login.
-async function finishLogin({ data, origin, client, label, home, term, choose, write }) {
+// Approved: save the token with the origin it came from, then the default org and the offer to upload past sessions. None can fail the login.
+async function finishLogin({ data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write, tty }) {
   writeCredentials({ token: data.token, user: data.user ?? null, label: label || hostname(), apiUrl: origin }, { home });
+  try { await clearLoginExpired(home); } catch { /* a stale flag is harmless */ }
   const name = clean(data.user?.name || data.user?.email || data.user?.id);
   say(write, name ? `Logged in as ${name}.` : 'Logged in.');
   await chooseDefaultOrg({ client, token: data.token, home, write, choose: choose || term.choose });
+  await backfill({ home, cwd, env, cloud, write, confirm: confirm || term.confirm, tty });
 }
 
 export async function login({
   home, env = process.env, cloud, label, sleep = delay, openUrl = openBrowser, now = () => Date.now(),
-  write = (s) => process.stdout.write(s), choose, apiUrl, tty = !!(process.stdin.isTTY && process.stdout.isTTY), confirmOpen,
+  write = (s) => process.stdout.write(s), cwd, confirm, choose, apiUrl, tty = !!(process.stdin.isTTY && process.stdout.isTTY), confirmOpen,
 } = {}) {
   const picked = loginClient({ cloud, env, home, apiUrl, write });
   if (!picked) return 1;
@@ -213,7 +305,7 @@ export async function login({
   const outcome = await pollApproval({ client, started, sleep, now });
   switch (outcome.status) {
     case 'approved':
-      await finishLogin({ data: outcome.data, origin, client, label, home, term, choose, write });
+      await finishLogin({ data: outcome.data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write, tty });
       return 0;
     case 'invalid': say(write, 'This login code is no longer valid.'); return 1;
     case 'denied': say(write, 'Login denied.'); return 1;

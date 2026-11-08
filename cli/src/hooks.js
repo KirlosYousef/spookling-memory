@@ -7,6 +7,8 @@ export const HOOK_FILES = {
   PreCompact: 'pre-compact.js',
   UserPromptSubmit: 'user-prompt-submit.js',
   Stop: 'stop.js',
+  // The desktop app closes a code session without a model Stop. Same uploader as Stop.
+  SessionEnd: 'stop.js',
 };
 export const MCP_NAME = 'spookling-memory';
 

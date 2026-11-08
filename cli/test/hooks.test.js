@@ -27,7 +27,8 @@ const user = {
 test('hooks run in exec form: node, then the script path as one argument; the ghost names the spinner', () => {
   const h = (f, statusMessage) => ({ type: 'command', command: 'node', args: [`/opt/spookling-memory/hooks/${f}`], ...(statusMessage && { statusMessage }) });
   assert.deepEqual(cmds, {
-    PreCompact: h('pre-compact.js', '👻 keeping your rules'), UserPromptSubmit: h('user-prompt-submit.js', '👻 remembering'), Stop: h('stop.js'),
+    PreCompact: h('pre-compact.js', '👻 keeping your rules'), UserPromptSubmit: h('user-prompt-submit.js', '👻 remembering'),
+    Stop: h('stop.js'), SessionEnd: h('stop.js'),
   });
   assert.deepEqual(hookHandlers("/my spookling's $dir/hooks", path.posix).Stop.args, ["/my spookling's $dir/hooks/stop.js"]);
 });
@@ -121,9 +122,9 @@ test('exec form: UserPromptSubmit prints the server reply whole; Stop and PreCom
   assert.ok(seen.every((s) => s[1] === 'application/json' && s[2] === input));
 });
 
-test('addHooks on an empty file adds the three events', () => {
+test('addHooks on an empty file adds the four events', () => {
   const out = addHooks({}, cmds);
-  assert.deepEqual(Object.keys(out.hooks), ['PreCompact', 'UserPromptSubmit', 'Stop']);
+  assert.deepEqual(Object.keys(out.hooks), ['PreCompact', 'UserPromptSubmit', 'Stop', 'SessionEnd']);
   assert.deepEqual(out.hooks.Stop, [{ hooks: [cmds.Stop] }]);
 });
 
@@ -204,7 +205,7 @@ test('wiring reports what is in place', () => {
   assert.deepEqual(wiring({}, {}), { events: [], mcp: false });
   const s = addHooks(user, cmds), m = addMcp({}, mcpEntry('/x', URL));
   const w = wiring(s, m);
-  assert.deepEqual([w.events.sort(), w.mcp], [['PreCompact', 'Stop', 'UserPromptSubmit'], true]);
+  assert.deepEqual([w.events.sort(), w.mcp], [['PreCompact', 'SessionEnd', 'Stop', 'UserPromptSubmit'], true]);
 });
 
 test('readJson: missing or empty is {}, broken JSON throws', () => {
