@@ -15,7 +15,7 @@ import {
   wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath, STATUS_FILE, addStatusLine, removeStatusLine, isOurStatus,
   addCodexMcp, codexConfigPath, codexEntry, codexMcpEntry, codexMcpToml, installVersions, mcpCommand, ourHookCommands, removeCodexMcp,
 } from './hooks.js';
-import { writeFileSecure } from './credentials.js';
+import { readCredentials, writeFileSecure } from './credentials.js';
 import { compareVersions, updateAvailable } from './registry.js';
 import { createRun, tilde } from './backup.js';
 import { checkToml } from './toml-check.js';
@@ -356,7 +356,7 @@ export function install(from, dir) {
   if (existsSync(join(from, 'cli', 'src'))) cpSync(join(from, 'cli', 'src'), join(dir, 'cli', 'src'), { recursive: true, filter: (p) => !LEAVE.has(basename(p)) });
 }
 
-// A command on PATH. The copy in INSTALL_DIR is what it runs, so update is `spookling update`.
+// A command on PATH. The copy in INSTALL_DIR is what it runs, so login is `spookling login`.
 function shQuote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
@@ -396,7 +396,7 @@ async function copyOut(ctx) {
     const cmd = linkCli(INSTALL_DIR);
     if (cmd) {
       ctx.written.push([rel(ctx, cmd), 'the spookling command']);
-      ok('spookling update');
+      ok('spookling login');
       const binDir = dirname(cmd);
       const pathDirs = (process.env.PATH || '').split(delimiter);
       if (!pathDirs.includes(binDir)) info(`If spookling is not found, add ${rel(ctx, binDir)} to PATH and open a new terminal.`);
@@ -904,6 +904,16 @@ async function steps(ctx, { anim, st }) {
   return stepDone(ctx, { anim, st });
 }
 
+// Local files only: the saved login. No network, so it never hangs.
+function cloudLine(line, home) {
+  try {
+    const creds = readCredentials({ home });
+    if (!creds.token) return line('cloud', 'not logged in (spookling login)', false);
+    const who = creds.fromEnv && !creds.user ? 'SPOOKLING_TOKEN' : (creds.user?.email || creds.user?.name || creds.user?.id || 'saved login');
+    line('cloud', `logged in as ${who}`, true);
+  } catch (e) { line('cloud', `could not read local cloud state: ${e.message}`, false); }
+}
+
 // What version folders do hooks, MCP entries and the spookling command point at? [what, version] pairs; hook commands are kept per harness.
 function refTracker() {
   const refs = [], hookRefs = { claude: [], codex: [] };
@@ -1020,6 +1030,7 @@ export async function status(project = process.cwd(), get = stats, home = homedi
   line('harness', [claude && 'Claude Code', codex && 'Codex (configured; trust checked in /hooks)'].filter(Boolean).join(', ') || 'none wired', claude || codex);
   line('tagger', s?.tagger ? taggerText(s.tagger) : 'unknown (the server is down, or older than this wizard)', !!s?.tagger);
   keysLine(line, project, s?.tagger);
+  cloudLine(line, home);
   if (!noUpdate) {
     const v = await updateAvailable({ home, current: VERSION, ...update }).catch(() => null);
     if (v) line('update', `${v} is available. Run spookling update.`, false);

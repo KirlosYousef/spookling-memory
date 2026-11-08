@@ -6,15 +6,31 @@ The install wizard for Spookling Memory. Node 18 or newer, no dependencies. Work
 npx spookling init                 # the intro, then the step-by-step install, for this project
 npx spookling init --scope user    # the same, wired for every project you open in Claude Code
 npx spookling demo                 # the whole install as you would see it, answered for you; writes nothing
-npx spookling status               # is the server up, what is wired (project and user files), which tagger; exit 0 when all is well
+npx spookling status               # is the server up, what is wired (project and user files), which tagger, and a `cloud` line (see [login](#login)); exit 0 when all is well
 npx spookling uninstall            # remove the hooks and the MCP entry (add --scope user for the user files), keep .memory/
 npx spookling update [--check] [--version x [--force]]   # install the newest version and re-wire hooks and MCP entries (--check: exit 10 if one is available)
 npx spookling restore [<timestamp>] [--yes]   # list the config backups init, update and uninstall made, or put one run's files back (--yes without a terminal)
+npx spookling login                # sign in in the browser, pick a default org; init does not do this
+npx spookling logout               # forget the saved token
+npx spookling whoami               # name and email, the API URL, the default org
+npx spookling orgs                 # the orgs you belong to, as id and name
+npx spookling tokens               # your CLI tokens: id, label, created, last used, (this device)
+npx spookling tokens revoke <id>   # revoke one (a unique prefix of 6+ characters works); this device's token also forgets the login
+npx spookling tokens revoke --all  # revoke every token, this device included
 ```
 
-An unknown command prints `Unknown command: <name>` to stderr, then the help, and exits 1; a bare `spookling`, `help`, `-h` and `--help` print the help and exit 0.
+`orgs` and `tokens` need a saved login (or `SPOOKLING_TOKEN`, see [Advanced](#advanced)); without one they say so and exit 1. `whoami` exits 1 when logged out. An unknown command prints `Unknown command: <name>` to stderr, then the help, and exits 1; a bare `spookling`, `help`, `-h` and `--help` print the help and exit 0. `orgs` lists the orgs where you are an active member.
 
-`init` installs the hooks and a `spookling` command (`~/.local/bin/spookling`, or `%USERPROFILE%\AppData\Local\spookling-memory\bin\spookling.cmd` on Windows).
+`init` never logs in and does not need an account. It installs the hooks and a `spookling` command (`~/.local/bin/spookling`, or `%USERPROFILE%\AppData\Local\spookling-memory\bin\spookling.cmd` on Windows).
+
+`spookling login` and the saved credentials:
+
+- It uses the Spookling app at `https://api.spookling.com`. It saves the token in `~/.spookling/credentials.json` (mode `0600`) with the server that issued it, and sends it to that server only. The rules, and how to choose another server, are under [Advanced](#advanced).
+- Credentials and the login are written to a temp file with mode 0600 and renamed into place; a symlink at the target is refused.
+- Every request sends `User-Agent: spookling/<version> (<platform>; node/<version>)` and refuses redirects.
+- Text from the server is stripped of control characters before it is printed. The token is never printed.
+- A login poll that is rate-limited waits and tries again; it does not log you out.
+- Dock-launched Claude Code does not inherit a shell export.
 
 Upgrading from an older version: see [Updating](#updating).
 
@@ -157,6 +173,29 @@ How it works:
 - Settings: with no status line, init writes `{"type": "command", "command": "node '<hooks>/status-line.js'", "refreshInterval": 5}`. With one, it only changes `command` to `node '<hooks>/status-line.js' --then '<yours>'`: your command runs first through the same shell Claude Code uses (`sh`; on Windows Git Bash, else PowerShell), and the ghost takes its own rows below (one line after two spaces under `NO_COLOR`); your `padding` and `refreshInterval` stay yours. Uninstall restores `command` from `--then`, or removes `statusLine` when there was none. On Windows the path goes in double quotes with forward slashes; a path or command holding `"`, `$`, a backtick or `!` (which Git Bash and PowerShell read differently) is refused, with a pointer to `--no-ghost`.
 - With any status line set, Claude Code hides most footer hints (`esc to interrupt`, `? for shortcuts`). The status line needs the folder's trust and is skipped under `disableAllHooks`, `allowManagedHooksOnly` and `--safe-mode`.
 
+## login
+
+`spookling login` prints, then waits:
+
+```
+Opening your browser to sign in to Spookling…
+  <verification URL, with the code in it>
+Confirm this code matches: 6HYE-3R4C
+Waiting for approval… (Ctrl-C to cancel)
+```
+
+The browser is opened only for an https link (http on this machine) on the API's host, a `spookling.com` host, or this machine when the API is on this machine; Windows uses `rundll32 url.dll,FileProtocolHandler`, never `cmd`. A well-formed link on any other host is not opened on its own: at a terminal it asks `Open it in your browser? [y/N]` (No is the default, and only an explicit y opens it); with no terminal it is printed under a warning and left unopened. A link that fails validation (a bad scheme, a login in the URL, not a URL) is never opened and never offered. When `device/start` answers 403 without the app's error envelope (API Gateway's bare `Forbidden` for a wrong address or stage), login says `that address doesn't look like a Spookling API` and to check the URL, including any stage path such as `/v1`. With no browser or no display it adds `Open the link above in a browser.` Colour is used only on a terminal; with `NO_COLOR` or a pipe the output is plain. Polling retries network errors and 5xx with a growing wait (capped at 30 s) until the code expires; only a 404 (invalid code), a denial or expiry end it, and an expiry after a dead network says so. A 429 waits for `Retry-After`. An unreachable API prints `Couldn't reach <api>. Check your connection, or SPOOKLING_API_URL if you set it.`, here and in `logout`, `orgs`, `refresh` and the sharing commands.
+
+After approval, one more step, which cannot fail the login:
+
+1. **Default org.** `GET /cli/orgs`. One org becomes `defaultOrgId` (and `defaultOrgName`) in `~/.spookling/credentials.json`, mode `0600`, and it prints `Default org: <name>`. Several: on a terminal you pick one from a menu; with no terminal the first is taken after 20 s. None: it says so. A re-login replaces the default. `logout` clears it.
+
+## Advanced
+
+- **A different server:** `spookling login --api-url <url>` (or `SPOOKLING_API_URL` for that login) picks the origin; it is saved as `apiUrl` with the token.
+- **CI and headless use:** `SPOOKLING_TOKEN` is used instead of the saved login, and only with an explicit `SPOOKLING_API_URL` that passes the https rule; `whoami` then shows no API line.
+- **Origin pinning:** a saved login only talks to the server it was issued by (an older credentials file without `apiUrl` is pinned to the shipped app). A different `SPOOKLING_API_URL` is ignored for authenticated calls: interactive commands print one line saying so, hooks say nothing. Origins must be `https`, except `localhost`, `127.0.0.1` and `[::1]`.
+
 ## Undo
 
 `npx spookling uninstall` (with `--scope user` for the user files) removes only the Spookling hooks, the ghost's status line (yours comes back) and the `spookling-memory` MCP entry; everything else in those files stays exactly as it was. It also offers to stop the server named in `.memory/server.pid`: a SIGTERM to its process group on macOS and Linux, `taskkill /T /F` on Windows. Your memory in `.memory/` stays, keys included. To remove that too, delete the folder yourself. The server and hooks stay in `~/.spookling-memory/<version>/` (it says so); delete that folder, after uninstall in every project and scope that used it, to remove them.
@@ -205,7 +244,7 @@ More:
 
 The update notice (`! update   0.2.1 is available. Run spookling update.`, where the version is whatever is newest):
 
-- It appears in `status`.
+- It appears in `status`, and in `whoami` at most once a day.
 - The registry is asked at most once per 24 h with a 2 s limit, and the answer is cached in `~/.spookling/update-check.json`.
 - Nothing runs from hooks, the MCP server or `init`. It is skipped when `CI` is set.
 
@@ -262,5 +301,6 @@ The ghost is generated from `brand/logos/ghost-mark.png`, not drawn by hand. Non
 
 ## Contributing / local development
 
+- Point a login at a local backend: `spookling login --api-url http://127.0.0.1:4000` (or `SPOOKLING_API_URL=http://127.0.0.1:4000` for that login). Plain `http` is accepted for localhost only.
 - `SPOOKLING_INIT_PORT` points the wizard's server probes at another port; the tests use it so they never talk to a real server on 7447.
 - `SPOOKLING_NO_UPDATE_CHECK=1` turns off the update check (`CI` and `node --test` do too).
