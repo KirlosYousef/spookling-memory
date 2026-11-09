@@ -1,6 +1,6 @@
 [project]
 name = "spookling-memory"
-version = "0.2.0"
+version = "0.2.1"
 description = "Spookling Memory: the memory algorithm (spookling_memory.core) and its local server (HTTP API, MCP tools, Claude Code hooks)"
 requires-python = "==3.12.*"
 dependencies = [
