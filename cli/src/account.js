@@ -166,19 +166,30 @@ async function backfill({ home, cwd, env, cloud, write, confirm, tty = false }) 
       say(write, 'Skipped. They upload one by one when a session stops.');
       return;
     }
-    let pushed = 0, queued = false;
-    const notes = [];
+    let pushed = 0, queued = false, waiting = 0;
+    const failed = [];
     await withProgress({ write, tty, label: 'Uploading past sessions', total: n }, async (progress) => {
       for (const log of logs) {
         const base = pushed;
-        const r = await pushFromLog({ logPath: log.path, home, env, cloud, project: log.project, log: (m) => notes.push(m), onProgress: (d) => progress(base + d) });
+        const r = await pushFromLog({ logPath: log.path, home, env, cloud, project: log.project, onProgress: (d) => progress(base + d) });
         pushed += r.pushed || 0;
         progress(pushed);
         if (r.queued) queued = true;
+        waiting += r.queuedCount || 0;
+        failed.push(...(r.failed || []));
       }
     });
     say(write, `Uploaded ${pushed} ${pushed === 1 ? 'session' : 'sessions'} privately.`);
-    if (queued) say(write, `Some turns did not go up${notes.length ? ` (${notes[0]})` : ''}. They retry at the next Stop, or run spookling refresh.`);
+    if (queued) {
+      // the uploader stops at the first refusal and leaves the rest queued, so count tried and untried apart, and name each distinct reason
+      const reasons = [...new Set(failed.map((f) => f.why))];
+      const untried = Math.max(0, waiting - failed.length);
+      const n = failed.length;
+      if (n) say(write, `${n} ${n === 1 ? 'session' : 'sessions'} could not be uploaded: ${reasons.join('; ')}${untried ? `; ${untried} more ${untried === 1 ? 'was' : 'were'} not tried` : ''}.`);
+      else say(write, `${waiting || 'Some'} ${waiting === 1 ? 'session' : 'sessions'} did not go up.`);
+      const server = failed.some((f) => /^5\d\d\b/.test(f.why));
+      say(write, `${server ? 'The server had a problem, not your setup. ' : ''}They stay queued and retry at the next Stop, or run spookling refresh.`);
+    }
     say(write, `Looked in ${logs.map((l) => l.path.replace(home, '~')).join(' and ')}. Other projects upload when their next session stops.`);
   } catch (e) {
     say(write, `Could not upload past sessions (${e?.code || e?.message || 'error'}). They upload at the next Stop; spookling refresh checks the connection.`);

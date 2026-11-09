@@ -127,7 +127,7 @@ test('seq_gap heals once per upload: a server that keeps refusing does not loop'
   const r = await push(home, cloud, logOf('s1'), { log: (m) => notes.push(m) });
   assert.equal(posts, 2, 'the first try and one retry');
   assert.equal(r.ok, false);
-  assert.match(notes.join('\n'), /upload queued: BAD_REQUEST seq_gap/, 'the reason is logged');
+  assert.match(notes.join('\n'), /upload queued: 400 BAD_REQUEST seq_gap/, 'the reason is logged');
 });
 
 test('seq_conflict still skips after a repeat', async () => {
@@ -150,5 +150,5 @@ test('the log gets the reason of an error, never the token', async () => {
   cloud.upsertSession = async () => { throw new CloudError('BAD_REQUEST', { status: 400, code: 'BAD_REQUEST', reason: 'weird_reason' }); };
   const notes = [];
   await push(home, cloud, logOf('s1'), { log: (m) => notes.push(m) });
-  assert.deepEqual(notes, ['upload queued: BAD_REQUEST weird_reason']);
+  assert.deepEqual(notes, ['upload queued: 400 BAD_REQUEST weird_reason']);
 });
