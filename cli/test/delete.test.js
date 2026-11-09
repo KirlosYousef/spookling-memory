@@ -211,3 +211,24 @@ test('cli: on a terminal y confirms one, anything else cancels; --all needs DELE
   assert.equal(out.filter((s) => /Nothing deleted/.test(s)).length, 4);
   assert.match(out.join(''), /Local memory \(\.memory\/\) is not touched/);
 });
+
+test('delete all: deletedIds are marked per batch, even when a later batch fails or the cap hits; absent field is fine', async () => {
+  const h = home();
+  await seed(h, (st) => { st.cursors.a = 1; st.cursors.b = 1; st.cursors.keep = 1; });
+  let n = 0;
+  const out = await deleteAllSessions({ home: h, cloud: { deleteAllSessions: async () => { if (n++) throw err(500); return { deleted: 2, deletedIds: ['a', 'b'], skipped: [], remaining: 5 }; } } });
+  assert.ok(out.error);
+  const st = readState(h, accountScope(h));
+  assert.equal(st.skipped.a.reason, 'session_deleted');
+  assert.equal(st.skipped.b.reason, 'session_deleted');
+  assert.equal(st.skipped.keep, undefined);
+  assert.equal(st.cursors.a, undefined);
+  const h2 = home();
+  await seed(h2, (st2) => { st2.cursors.x = 1; });
+  let m = 0;
+  const capped = await deleteAllSessions({ home: h2, maxRounds: 2, cloud: { deleteAllSessions: async () => ({ deleted: 1, deletedIds: [`x${m++}`], skipped: [], remaining: 9 }) } });
+  assert.equal(capped.incomplete, true);
+  const st2 = readState(h2, accountScope(h2));
+  assert.deepEqual(Object.keys(st2.skipped).sort(), ['x0', 'x1']);
+  assert.equal(st2.cursors.x, 1); // not in deletedIds, unfinished run: untouched
+});

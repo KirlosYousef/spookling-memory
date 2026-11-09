@@ -62,6 +62,8 @@ export async function deleteAllSessions({ env = process.env, home = homedir(), c
       const n = Number.isFinite(Number(data?.deleted)) ? Number(data.deleted) : 0;
       deleted += n;
       remaining = Number.isFinite(Number(data?.remaining)) ? Number(data.remaining) : 0;
+      const ids = (Array.isArray(data?.deletedIds) ? data.deletedIds : []).filter((x) => typeof x === 'string' && x);
+      await markDeleted(home, env, ids); // per batch: an error or the cap later still leaves these marked
       for (const s of Array.isArray(data?.skipped) ? data.skipped : []) if (s?.id) skipped.set(String(s.id), s.reason || 'org_owned');
       if (remaining <= 0) { finished = true; break; }
       if (n === 0) { finished = true; break; } // no progress: what is left cannot be deleted from here
