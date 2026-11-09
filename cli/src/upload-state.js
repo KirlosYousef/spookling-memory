@@ -19,14 +19,17 @@ export class StateBusy extends Error {
 
 export const statePath = (home) => join(home, '.spookling', 'upload-state.json');
 
+// A job is { sid, project } (auto-share rule, decided after the upload) or { sid, project, orgId } (an explicit share the user asked
+// for before the session was on the server; project may then be '').
 export function shareJobs(raw) {
   if (!Array.isArray(raw)) return [];
   const jobs = [];
   for (const item of raw) {
     if (!item || typeof item.sid !== 'string' || !item.sid) continue;
-    if (typeof item.project !== 'string' || !item.project) continue;
-    if (jobs.some((job) => job.sid === item.sid && job.project === item.project)) continue;
-    jobs.push({ sid: item.sid, project: item.project });
+    const orgId = typeof item.orgId === 'string' && item.orgId ? item.orgId : '';
+    if (typeof item.project !== 'string' || (!item.project && !orgId)) continue;
+    if (jobs.some((job) => job.sid === item.sid && job.project === item.project && (job.orgId || '') === orgId)) continue;
+    jobs.push({ sid: item.sid, project: item.project, ...(orgId ? { orgId } : {}) });
   }
   return jobs;
 }

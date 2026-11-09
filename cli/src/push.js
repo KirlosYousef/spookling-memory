@@ -240,6 +240,7 @@ function giveUpShare(error) {
 // After a private upload, share the session when this project has an auto-share rule.
 // A missing route means the server has no rules. A down network throws so the caller can queue it.
 async function shareUploaded(client, token, job) {
+  if (job.orgId) return shareToOrg(client, token, job);
   if (typeof client.listAutoShare !== 'function' || typeof client.shareSession !== 'function') return;
   let rules;
   try {
@@ -253,6 +254,16 @@ async function shareUploaded(client, token, job) {
   if (!rule) return;
   try {
     await client.shareSession({ sid: job.sid, orgId: rule.orgId, token });
+  } catch (error) {
+    if (giveUpShare(error)) return;
+    throw error;
+  }
+}
+
+// An explicit share the user asked for: straight to that org (no rule lookup). Refused for good is dropped by the caller's giveUp.
+async function shareToOrg(client, token, job) {
+  try {
+    await client.shareSession({ sid: job.sid, orgId: job.orgId, token });
   } catch (error) {
     if (giveUpShare(error)) return;
     throw error;
@@ -486,19 +497,26 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
   return { pushed, queued: waiting.length };
 }
 
-// Pending shares are retried first. Only the ones that went through are removed, so a share another uploader added is kept.
-async function flushShares({ client, creds, ctx }) {
-  const jobs = readState(ctx.home, ctx.scope).shares;
+// Pending auto-share jobs are retried first. Only the ones that went through are removed, so a share another uploader added is kept.
+// Explicit org shares (orgId) wait until the session is on the server (it has a cursor), so they run after the upload.
+async function flushShares({ client, creds, ctx, explicit = false }) {
+  const state = readState(ctx.home, ctx.scope);
+  const jobs = state.shares.filter((j) => (explicit ? !!j.orgId : !j.orgId));
   if (!jobs.length) return;
   const done = [];
   for (const job of jobs) {
+    if (explicit && typeof state.cursors[job.sid] !== 'number') {
+      if (permanentSkip(state.skipped[job.sid])) done.push(job); // refused or deleted for good: it will never be there to share
+      continue; // not uploaded yet: keep waiting for the next save
+    }
     try { await shareUploaded(client, creds.token, job); done.push(job); } catch (error) {
       ctx.log(`upload queued: ${why(error)}`);
       break;
     }
   }
   if (done.length) {
-    await persist(ctx, (st) => { st.shares = st.shares.filter((j) => !done.some((d) => d.sid === j.sid && d.project === j.project)); });
+    const same = (a, b) => a.sid === b.sid && a.project === b.project && (a.orgId || '') === (b.orgId || '');
+    await persist(ctx, (st) => { st.shares = st.shares.filter((j) => !done.some((d) => same(d, j))); });
   }
 }
 
@@ -551,6 +569,7 @@ async function upload({ logPath, logText, home, env, cloud, project, sessionId, 
 
   await flushShares({ client, creds, ctx });
   const { pushed, queued } = await deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, onProgress, full: new Map(projected.map((x) => [x.sid, x])) });
+  await flushShares({ client, creds, ctx, explicit: true });
   const pendingShare = readState(home, scope).shares.length > 0;
   return { ok: queued === 0 && !pendingShare, queued: queued > 0 || pendingShare, pushed };
 }

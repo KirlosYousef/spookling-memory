@@ -13,7 +13,8 @@ import { VERSION, clean, originWarning } from './cloud.js';
 import { updateAvailable } from './registry.js';
 import { refresh } from './team.js';
 import { deleteAllSessions, deleteSession, formatDelete } from './delete.js';
-import { setProjectAutoShare, setSessionShare, shareStatus } from './share.js';
+import { currentSession, setProjectAutoShare, setSessionShare, shareStatus, webUrl } from './share.js';
+import { shareTarget } from './team.js';
 
 const HELP = `Spookling Memory
 
@@ -34,8 +35,8 @@ const HELP = `Spookling Memory
   spookling refresh         pull every org feed into the local cache (needs a saved login)
   spookling refresh --org <id or name>
   spookling sessions [project] [--limit N | --all]   your uploaded sessions, newest 20 by default: private or shared, and the auto-share rules
-  spookling share <session id> [--org <id or name>]     share a session with an org
-  spookling unshare <session id> [--org <id or name>]   stop sharing it (all orgs without --org)
+  spookling share [<session id> | --last] [--org <id or name>] [--yes]   share a session with an org (no id: the current session, else this project's newest; asks first unless --yes)
+  spookling unshare [<session id> | --last] [--org <id or name>]   stop sharing it (all orgs without --org); cancels a share still pending
   spookling autoshare <project> on|off [--org <id or name>] [--backfill]   share every new session of a project
   spookling delete <session id> [--yes]   delete one uploaded session from the cloud (local memory is kept; asks first)
   spookling delete --all [--yes]          delete all your uploaded sessions from the cloud (type DELETE to confirm)
@@ -76,6 +77,7 @@ function formatRaw(out, { limit = 20 } = {}) {
     };
     return shown.map(row).join('\n') + more + rules(out.autoShare);
   }
+  if (out.pending) return out.message;
   if (out.action) return `${out.action}${out.orgs?.length ? ` · ${out.orgs.join(', ')}` : ''}${out.sessionId ? ` · now ${tag(out)}` : ''}`;
   return out.message || (out.visibility ? tag(out) : 'done');
 }
@@ -98,7 +100,7 @@ const operands = (args, valued = ['org', 'limit']) => args.slice(1).filter((a, i
 const AUTHENTICATED = new Set(['logout', 'whoami', 'orgs', 'tokens', 'refresh', 'sessions', 'share', 'unshare', 'autoshare', 'delete']);
 
 // sessions, share, unshare, autoshare: who can see your own sessions
-async function sharing(cmd, args, { fns, home, org }) {
+async function sharing(cmd, args, { fns, home, org, cwd, env }, { ask, tty }) {
   const limitArg = flag(args, 'limit', 'takes a whole number of 1 or more');
   if (limitArg !== undefined && !(Number.isInteger(Number(limitArg)) && Number(limitArg) >= 1)) usage('--limit takes a whole number of 1 or more');
   const limit = args.includes('--all') ? 0 : limitArg === undefined ? 20 : Number(limitArg);
@@ -110,10 +112,32 @@ async function sharing(cmd, args, { fns, home, org }) {
     if (!rest[0] || !['on', 'off'].includes(rest[1])) usage('usage: spookling autoshare <project> on|off [--org <id or name>] [--backfill]');
     out = await target.project({ project: rest[0], enabled: rest[1] === 'on', org: org ?? '', backfill: args.includes('--backfill'), home });
   } else {
-    if (!rest[0]) usage(`usage: spookling ${cmd} <session id> [--org <id or name>]`);
-    out = await target.session({ sessionId: rest[0], share: cmd === 'share', org: org ?? '', home });
+    if (rest.length > 1 || (rest[0] && args.includes('--last'))) usage(`usage: spookling ${cmd} [<session id> | --last] [--org <id or name>]${cmd === 'share' ? ' [--yes]' : ''}`);
+    let sessionId = rest[0] || '';
+    const guessed = !sessionId; // an id typed by the user is its own confirmation; a guessed session is shown and asked about first
+    const projectDir = cwd;
+    if (!sessionId) {
+      const cur = await currentSession({ home, env, projectDir, cloud: undefined });
+      if (cur.error) { process.stdout.write(`${formatShare(cur)}\n`); return 1; }
+      sessionId = cur.sessionId;
+    }
+    if (cmd === 'share' && guessed && !args.includes('--yes')) {
+      const t = await (target.target || shareTarget)({ kind: 'session', sessionId, org: org ?? '', projectDir, home, env });
+      if (t.error) { process.stdout.write(`${formatShare(t)}\n`); return 1; }
+      process.stdout.write(`Share session ${sessionId}\n  title:   ${t.title}\n  project: ${t.project || '-'}\n  org:     ${t.orgName}\n`
+        + `${t.pending ? 'It is not saved yet: it uploads now, or is shared after its next save.\n' : ''}`);
+      if (!tty) usage('spookling share asks for confirmation and this is not a terminal. Add --yes to share without asking.');
+      const answer = String(await ask('Share? (y/N) ')).trim().toLowerCase();
+      if (answer !== 'y' && answer !== 'yes') { process.stdout.write('Not shared.\n'); return 1; }
+    }
+    out = await target.session({ sessionId, share: cmd === 'share', org: org ?? '', projectDir, home, env });
+    if (out.ok && !out.pending && cmd === 'share') {
+      const url = webUrl(sessionId, { env, home });
+      if (url) out.url = url;
+    }
   }
   process.stdout.write(`${formatShare(out, { limit })}\n`);
+  if (out.url) process.stdout.write(`${out.url}\n`);
   return out.error ? 1 : 0;
 }
 
@@ -173,7 +197,7 @@ async function route(args, deps) {
   const home = deps.home || homedir(), cwd = deps.cwd || process.cwd();
   const folder = scope === 'user' ? home : cwd;
   const env = deps.env || process.env;
-  const ctx = { fns, home, org };
+  const ctx = { fns, home, org, cwd, env };
 
   if (AUTHENTICATED.has(cmd)) {
     const warning = originWarning(env, { home });
@@ -188,7 +212,7 @@ async function route(args, deps) {
     case 'restore': return fns.restore({ home, stamp: operands(args, [])[0], yes: args.includes('--yes') });
     case 'update': return fns.update({ home, cwd, check: args.includes('--check'), version: flag(args, 'version', 'needs a version, like 1.2.3'), force: args.includes('--force') });
     case 'refresh': return fns.refresh({ home, orgId: org });
-    case 'sessions': case 'share': case 'unshare': case 'autoshare': return sharing(cmd, args, ctx);
+    case 'sessions': case 'share': case 'unshare': case 'autoshare': return sharing(cmd, args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'delete': return deleteCommand(args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'login': return fns.login({ home, cwd, apiUrl });
     case 'logout': return fns.logout({ home });

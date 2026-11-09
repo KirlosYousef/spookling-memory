@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpHome } from './helpers.mjs';
 import { writeCredentials } from '../src/credentials.js';
-import { pickOrg, setProjectAutoShare, setSessionShare, shareStatus } from '../src/share.js';
-import { formatShare } from '../src/main.js';
+import { pickOrg, setProjectAutoShare, setSessionShare, shareStatus, webUrl } from '../src/share.js';
+import { formatShare, main } from '../src/main.js';
+import { accountScope, readState } from '../src/upload-state.js';
+import { pushFromLog } from '../src/push.js';
 
 const home = () => {
   const h = tmpHome('spk-share-');
@@ -92,4 +95,169 @@ test('pickOrg and formatShare read plainly', () => {
   assert.equal(pickOrg([{ id: 'o', name: 'N' }], '').org.id, 'o');
   assert.equal(formatShare({ sessions: [{ sessionId: 'a', visibility: 'private', sharedWith: [], project: 'p', title: 't' }], autoShare: [] }).includes('private'), true);
   assert.match(formatShare({ error: 'x' }), /^x$/);
+});
+
+// ---- a session not on the server yet ----
+
+// a cloud that really stores what is uploaded, so the on-demand upload is the real push path
+function storingCloud({ failUpload = false, ...rest } = {}) {
+  const sessions = [];
+  const cloud = fakeCloud({ sessions, ...rest });
+  cloud.upsertSession = async ({ sid, session }) => {
+    if (failUpload) throw Object.assign(new Error('x'), { name: 'CloudError', status: 503 });
+    if (!sessions.find((s) => s.clientId === sid)) sessions.push({ clientId: sid, title: session.title, project: session.project, turnCount: 0, sharedWith: [] });
+  };
+  cloud.postTurns = async ({ sid, turns }) => { sessions.find((s) => s.clientId === sid).turnCount += turns.length; return { lastSeq: turns[turns.length - 1].seq }; };
+  return cloud;
+}
+
+function projectWithLog(h, sid, { turns = 2 } = {}) {
+  const dir = join(h, 'proj');
+  mkdirSync(join(dir, '.memory'), { recursive: true });
+  const lines = [];
+  for (let i = 0; i < turns; i += 1) lines.push(JSON.stringify({ session_id: sid, role: i % 2 ? 'assistant' : 'user', text: i % 2 ? 'ok' : 'Build the thing', ts: `2026-11-01T10:0${i}:00Z` }));
+  writeFileSync(join(dir, '.memory', 'log.jsonl'), lines.length ? `${lines.join('\n')}\n` : '');
+  return dir;
+}
+
+test('sharing a session that is not uploaded uploads it from the local log first, then shares', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1');
+  const cloud = storingCloud();
+  const out = await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud });
+  assert.equal(out.ok, true);
+  assert.equal(out.pending, undefined);
+  assert.equal(out.visibility, 'shared');
+  assert.deepEqual(cloud.calls, [['share', 'new1', 'o1']]);
+  assert.equal(readState(h, accountScope(h)).cursors.new1, 1); // the cursor moved: a later Stop does not resend
+  assert.deepEqual(readState(h, accountScope(h)).shares, []);
+});
+
+test('with no turns logged yet the share is queued, and status says so', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1', { turns: 0 });
+  const cloud = storingCloud();
+  const out = await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud });
+  assert.deepEqual([out.ok, out.pending], [true, true]);
+  assert.equal(out.message, "Will be shared with Org test after this session's next save.");
+  assert.deepEqual(cloud.calls, []);
+  assert.equal(readState(h, accountScope(h)).shares.length, 1);
+  const st = await shareStatus({ sessionId: 'new1', home: h, cloud });
+  assert.equal(st.visibility, 'share pending');
+  assert.match(formatShare(out), /Will be shared with Org test/);
+});
+
+test('a failed upload queues the share; the next successful save applies it', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1');
+  const down = storingCloud({ failUpload: true });
+  const out = await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud: down });
+  assert.equal(out.pending, true);
+  assert.deepEqual(down.calls, []);
+  // later: the Stop hook's upload succeeds, and the queued share rides along
+  const up = storingCloud();
+  const r = await pushFromLog({ logPath: join(dir, '.memory', 'log.jsonl'), home: h, cloud: up, project: 'proj', sessionId: 'new1', log: () => {} });
+  assert.equal(r.pushed, 1);
+  assert.deepEqual(up.calls, [['share', 'new1', 'o1']]);
+  assert.deepEqual(readState(h, accountScope(h)).shares, []);
+});
+
+test('a queued share is not applied before the session is on the server', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1', { turns: 0 });
+  await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud: storingCloud() });
+  const up = storingCloud();
+  await pushFromLog({ logText: '', home: h, cloud: up, log: () => {} });
+  assert.deepEqual(up.calls, []);
+  assert.equal(readState(h, accountScope(h)).shares.length, 1);
+});
+
+test('unshare of a queued share removes the queued job', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1', { turns: 0 });
+  const cloud = storingCloud();
+  await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud });
+  const out = await setSessionShare({ sessionId: 'new1', share: false, projectDir: dir, home: h, cloud });
+  assert.equal(out.ok, true);
+  assert.match(out.message, /Cancelled the pending share/);
+  assert.deepEqual(readState(h, accountScope(h)).shares, []);
+  assert.deepEqual(cloud.calls, []);
+});
+
+test('no session id: the newest session in this project is used', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'cur1');
+  const cloud = storingCloud();
+  const out = await setSessionShare({ share: true, projectDir: dir, home: h, env: {}, cloud });
+  assert.equal(out.ok, true);
+  assert.deepEqual(cloud.calls, [['share', 'cur1', 'o1']]);
+  const viaEnv = await setSessionShare({ share: true, projectDir: dir, home: h, env: { SPOOKLING_SESSION_ID: 'other' }, cloud: storingCloud() });
+  assert.equal(viaEnv.sessionId, 'other');
+});
+
+test('no id and no log: the newest uploaded session of the project', async () => {
+  const h = home();
+  const cloud = fakeCloud({ sessions: [{ ...sess('a', 'proj'), lastTurnAt: '2026-11-01' }, { ...sess('b', 'proj'), lastTurnAt: '2026-11-03' }] });
+  const out = await setSessionShare({ share: true, projectDir: join(h, 'proj'), home: h, env: {}, cloud });
+  assert.deepEqual(cloud.calls, [['share', 'b', 'o1']]);
+  assert.equal(out.ok, true);
+});
+
+test('webUrl: the default API maps to the web app, another API needs SPOOKLING_APP_URL', () => {
+  const h = tmpHome('spk-url-');
+  assert.equal(webUrl('s1', { env: { SPOOKLING_APP_URL: 'https://app.example.com/' }, home: h }), 'https://app.example.com/memory/s1');
+  writeCredentials({ token: 'spk_t', user: { id: 'u1' }, apiUrl: 'https://api.other.example' }, { home: h });
+  assert.equal(webUrl('s1', { env: {}, home: h }), ''); // an unknown API has no known web app
+  writeCredentials({ token: 'spk_t', user: { id: 'u1' }, apiUrl: 'https://api.spookling.com' }, { home: h });
+  assert.equal(webUrl('s1', { env: {}, home: h }), 'https://app.spookling.com/memory/s1');
+});
+
+// ---- the CLI: `spookling share` with no id ----
+
+async function runCli(args, deps) {
+  let out = '';
+  const w = process.stdout.write;
+  process.stdout.write = (c) => { out += c; return true; };
+  try { const code = await main(['node', 'spookling', ...args], deps); return { code, out }; } finally { process.stdout.write = w; }
+}
+
+test('share with no id shows what will be shared and asks; N shares nothing', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'cur1');
+  const cloud = storingCloud();
+  let asked = 0;
+  const share = {
+    status: shareStatus,
+    session: (a) => setSessionShare({ ...a, cloud }),
+    target: async (a) => (await import('../src/team.js')).shareTarget({ ...a, cloud }),
+  };
+  const no = await runCli(['share'], { home: h, cwd: dir, env: {}, tty: true, ask: async () => { asked += 1; return 'n'; }, share });
+  assert.equal(asked, 1);
+  assert.match(no.out, /title:\s+Build the thing/);
+  assert.match(no.out, /org:\s+Org test/);
+  assert.match(no.out, /Not shared/);
+  assert.deepEqual(cloud.calls, []);
+  const yes = await runCli(['share', '--last'], { home: h, cwd: dir, env: { SPOOKLING_APP_URL: 'https://app.example.com' }, tty: true, ask: async () => 'y', share });
+  assert.equal(yes.code, 0);
+  assert.match(yes.out, /shared/);
+  assert.match(yes.out, /https:\/\/app\.example\.com\/memory\/cur1/);
+  assert.deepEqual(cloud.calls, [['share', 'cur1', 'o1']]);
+});
+
+test('share --yes skips the question; without a terminal and without --yes it refuses', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'cur1');
+  const cloud = storingCloud();
+  const share = { status: shareStatus, session: (a) => setSessionShare({ ...a, cloud }), target: async () => ({ orgName: 'Org test', title: 't', project: 'p' }) };
+  const yes = await runCli(['share', '--yes'], { home: h, cwd: dir, env: {}, tty: false, ask: async () => { throw new Error('asked'); }, share });
+  assert.equal(yes.code, 0);
+  assert.deepEqual(cloud.calls, [['share', 'cur1', 'o1']]);
+  let code = 0;
+  await runCli(['share'], { home: h, cwd: dir, env: {}, tty: false, share, exit: (c) => { code = c; } });
+  assert.equal(code, 2);
+});
+
+test('help lists share, unshare, autoshare and update', async () => {
+  const { out } = await runCli(['help'], {});
+  for (const w of ['spookling share', 'spookling unshare', 'spookling autoshare', 'spookling update']) assert.ok(out.includes(w), w);
 });

@@ -277,3 +277,37 @@ def test_delete_needs_exactly_one_target(team):
     assert "error" in run(M.memory_delete(None, False, ctx))
     assert "error" in run(M.memory_delete("sid1", True, ctx))
     assert ctx.asked == [] and deleted(team) == []
+
+
+def _pending_team(monkeypatch):
+    calls = []
+
+    def fake(name, args):
+        calls.append((name, args))
+        if name == "share-target":
+            return {"orgId": "o1", "orgName": "Acme", "title": "New chat", "project": "", "sessionId": "cur1", "pending": True}
+        return {"ok": True, "pending": True, "message": "Will be shared with Acme after this session's next save."}
+
+    monkeypatch.setattr(M, "_team", fake)
+    return calls
+
+
+def test_a_pending_session_still_triggers_the_dialog_then_queues_on_yes(monkeypatch):
+    calls = _pending_team(monkeypatch)
+    ctx = Ctx(Res("accept", True))
+    out = run(M.memory_share("", True, "acme", ctx))
+    assert out["pending"] is True
+    assert "next save" in ctx.asked[0] and "Acme" in ctx.asked[0]
+    assert acted(calls) == [("share", {"sessionId": "cur1", "share": True, "org": "o1"})]  # the resolved current session
+
+
+@pytest.mark.parametrize("answer", [Res("decline"), Res("cancel"), Res("accept", False)])
+def test_declining_a_pending_share_queues_nothing(monkeypatch, answer):
+    calls = _pending_team(monkeypatch)
+    out = run(M.memory_share("", True, "acme", Ctx(answer)))
+    assert out["ok"] is False and acted(calls) == []
+
+
+def test_session_id_defaults_to_empty_for_the_current_session():
+    import inspect
+    assert inspect.signature(M.memory_share).parameters["session_id"].default == ""

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpHome } from './helpers.mjs';
 import { writeCredentials } from '../src/credentials.js';
@@ -101,16 +102,47 @@ test('shareTarget names the session, project and org, and counts what a backfill
   writeCredentials({ token: 'spk_x', apiUrl: 'https://x.example' }, { home });
   const cloud = fakeCloud({ orgs, sessions: mine });
   const s = await shareTarget({ kind: 'session', sessionId: 'a', org: 'acme', home, cloud });
-  assert.deepEqual(s, { orgId: 'o1', orgName: 'Acme', title: 'Fix the login bug', project: 'shop' });
+  assert.deepEqual(s, { orgId: 'o1', orgName: 'Acme', sessionId: 'a', title: 'Fix the login bug', project: 'shop' });
   const p = await shareTarget({ kind: 'project', project: 'shop', org: 'Acme', home, cloud });
   assert.deepEqual(p, { orgId: 'o1', orgName: 'Acme', count: 2 }); // b is already shared with Acme
 });
 
-test('shareTarget asks which org when it is ambiguous, and refuses an unknown or not uploaded session', async () => {
+test('shareTarget asks which org when it is ambiguous, and refuses an unknown org', async () => {
   const home = homeOf();
   writeCredentials({ token: 'spk_x', apiUrl: 'https://x.example' }, { home });
   const cloud = fakeCloud({ orgs, sessions: mine });
   assert.match((await shareTarget({ kind: 'session', sessionId: 'a', home, cloud })).error, /Which org/);
-  assert.match((await shareTarget({ kind: 'session', sessionId: 'zzz', org: 'acme', home, cloud })).error, /not been uploaded/);
   assert.match((await shareTarget({ kind: 'session', sessionId: 'a', org: 'nope', home, cloud })).error, /No org matches/);
+});
+
+test('shareTarget for a session not on the server is pending, not an error, so the dialog still runs', async () => {
+  const home = homeOf();
+  writeCredentials({ token: 'spk_x', apiUrl: 'https://x.example' }, { home });
+  const cloud = fakeCloud({ orgs, sessions: mine });
+  const t = await shareTarget({ kind: 'session', sessionId: 'zzz', org: 'acme', projectDir: join(home, 'none'), home, cloud });
+  assert.equal(t.error, undefined);
+  assert.deepEqual(t, { orgId: 'o1', orgName: 'Acme', sessionId: 'zzz', pending: true, title: 'zzz', project: '' });
+});
+
+test('shareTarget titles a pending session from its local log, and writes nothing', async () => {
+  const home = homeOf();
+  writeCredentials({ token: 'spk_x', apiUrl: 'https://x.example' }, { home });
+  const dir = join(home, 'proj');
+  mkdirSync(join(dir, '.memory'), { recursive: true });
+  writeFileSync(join(dir, '.memory', 'log.jsonl'), `${JSON.stringify({ session_id: 'new1', role: 'user', text: 'Add dark mode', ts: '2026-11-01T10:00:00Z' })}\n`);
+  const t = await shareTarget({ kind: 'session', sessionId: 'new1', org: 'acme', projectDir: dir, home, cloud: fakeCloud({ orgs, sessions: mine }) });
+  assert.equal(t.pending, true);
+  assert.equal(t.title, 'Add dark mode');
+  assert.equal(existsSync(join(home, '.spookling', 'upload-state.json')), false);
+});
+
+test('shareTarget with no id uses the newest local session', async () => {
+  const home = homeOf();
+  writeCredentials({ token: 'spk_x', apiUrl: 'https://x.example' }, { home });
+  const dir = join(home, 'proj');
+  mkdirSync(join(dir, '.memory'), { recursive: true });
+  const ev = (sid, ts) => JSON.stringify({ session_id: sid, role: 'user', text: `hi ${sid}`, ts });
+  writeFileSync(join(dir, '.memory', 'log.jsonl'), `${ev('old', '2026-11-01T10:00:00Z')}\n${ev('newer', '2026-11-02T10:00:00Z')}\n`);
+  const t = await shareTarget({ kind: 'session', org: 'acme', projectDir: dir, home, env: {}, cloud: fakeCloud({ orgs, sessions: mine }) });
+  assert.equal(t.sessionId, 'newer');
 });
