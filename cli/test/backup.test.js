@@ -261,6 +261,19 @@ test('init --allow-share adds the four share tools and /spookling-share; no flag
   assert.ok(!existsSync(cmd(home)), 'the command file is gone');
 });
 
+test('uninstall keeps a share rule the user had before init, and removes only the ones Spookling added', posix, async () => {
+  const { SHARE_TOOLS } = await import('../src/hooks.js');
+  const home = tmp('spk-sb-'), project = tmp('spk-sbp-');
+  const mine = { permissions: { allow: ['Bash(git status)', SHARE_TOOLS[0]] } };
+  let r = await sandbox(['init', '--scope', 'user', '--no-ghost', '--no-anim', '--allow-share'], { home, project, files: { '.claude/settings.json': mine } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(claudeSettings(home), 'utf8')).permissions.allow, ['Bash(git status)', ...SHARE_TOOLS]);
+  assert.deepEqual(JSON.parse(readFileSync(join(home, '.spookling', 'share-allow.json'), 'utf8')).added[claudeSettings(home)], SHARE_TOOLS.slice(1));
+  r = await sandbox(['uninstall', '--scope', 'user'], { home, project });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(claudeSettings(home), 'utf8')).permissions.allow, ['Bash(git status)', SHARE_TOOLS[0]]);
+});
+
 test('a spookling-share.md the user wrote is never overwritten or removed; --allow-share with --no-allow-share is refused', posix, async () => {
   const mine = '# my own command\n';
   const files = { '.claude/commands/spookling-share.md': mine };

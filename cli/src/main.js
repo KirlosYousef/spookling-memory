@@ -12,6 +12,7 @@ import { login, logout, orgs, tokens, whoami } from './account.js';
 import { VERSION, clean, originWarning } from './cloud.js';
 import { updateAvailable } from './registry.js';
 import { refresh } from './team.js';
+import { flushQueued } from './push.js';
 import { deleteAllSessions, deleteSession, formatDelete } from './delete.js';
 import { currentSession, setProjectAutoShare, setSessionShare, shareStatus, webUrl } from './share.js';
 import { shareTarget } from './team.js';
@@ -63,7 +64,12 @@ export function formatShare(out, opts = {}) {
   return clean(formatRaw(out, opts));
 }
 
-function formatRaw(out, { limit = 20 } = {}) {
+function formatRaw(out, opts = {}) {
+  const body = formatBody(out, opts);
+  return out.notices?.length ? `${out.notices.join('\n')}\n${body}` : body;
+}
+
+function formatBody(out, { limit = 20 } = {}) {
   if (out.error) return out.error;
   const tag = (s) => (s.visibility === 'shared' ? `shared → ${s.sharedWith.map((o) => o.name).join(', ')}` : 'private');
   const rules = (list) => (list?.length ? `\nauto-share: ${list.map((r) => `${r.project} → ${r.org}`).join('; ')}` : '');
@@ -178,7 +184,7 @@ function tokensCommand(args, { fns, home }) {
 
 async function route(args, deps) {
   const fns = {
-    init, refresh, login, logout, whoami, orgs, tokens, status, update, restore, initUpdate, uninstall, backfill,
+    init, refresh, flush: flushQueued, login, logout, whoami, orgs, tokens, status, update, restore, initUpdate, uninstall, backfill,
     delete: { one: deleteSession, all: deleteAllSessions },
     share: { status: shareStatus, session: setSessionShare, project: setProjectAutoShare },
     ...Object.fromEntries(Object.entries(deps).filter(([, v]) => typeof v === 'function' || (v && typeof v === 'object' && ('status' in v || 'one' in v)))),
@@ -217,7 +223,11 @@ async function route(args, deps) {
     }
     case 'restore': return fns.restore({ home, stamp: operands(args, [])[0], yes: args.includes('--yes') });
     case 'update': return fns.update({ home, cwd, check: args.includes('--check'), version: flag(args, 'version', 'needs a version, like 1.2.3'), force: args.includes('--force') });
-    case 'refresh': return fns.refresh({ home, orgId: org });
+    case 'refresh': {
+      const code = await fns.refresh({ home, orgId: org });
+      if (code === 0) await fns.flush({ home, env });
+      return code;
+    }
     case 'sessions': case 'share': case 'unshare': case 'autoshare': return sharing(cmd, args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'delete': return deleteCommand(args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'login': return fns.login({ home, cwd, apiUrl });

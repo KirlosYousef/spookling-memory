@@ -628,7 +628,7 @@ export async function shareTarget({ kind, sessionId, project, org, projectDir = 
     const base = { orgId: picked.org.id, orgName: flat(picked.org.name, 80) };
     if (kind === 'project') {
       if (!project) return { error: 'A project name is required.' };
-      const st = await shareStatus({ project, env, home, cloud });
+      const st = await shareStatus({ project, env, home, cloud, notify: false });
       if (st.error) return { error: st.error };
       const count = (st.sessions || []).filter((s) => !(s.sharedWith || []).some((o) => o.id === picked.org.id)).length;
       return { ...base, count };
@@ -638,7 +638,7 @@ export async function shareTarget({ kind, sessionId, project, org, projectDir = 
       if (cur.error) return { error: cur.error };
       sessionId = cur.sessionId;
     }
-    const st = await shareStatus({ sessionId, env, home, cloud });
+    const st = await shareStatus({ sessionId, env, home, cloud, notify: false });
     if (st.error) return { error: st.error };
     // not on the server yet: still a valid share. It is uploaded (or queued until the next save) once the user confirms.
     if (st.visibility === 'not uploaded' || st.visibility === 'share pending') {

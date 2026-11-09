@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { CloudError, clean, createCloud } from './cloud.js';
 import { readCredentials, writeFileSecure } from './credentials.js';
 import { maskSecrets, maskTurn } from './mask.js';
-import { StateBusy, accountScope, claimSession, readState, shareJobs, updateState } from './upload-state.js';
+import { SHARE_JOB_MAX_AGE_MS, StateBusy, accountScope, claimSession, noteUpload, readState, shareJobs, takeShareFailures, updateState } from './upload-state.js';
 
 const LIST_PAGES = 20; // pages of your sessions searched for one when the server cannot be asked for it by id
 const BATCH = 200; // turns per POST: the API's page size
@@ -227,6 +227,11 @@ export function pendingUploads(home = homedir(), env = process.env) {
   return { sessions: queue.length, turns };
 }
 
+/** Queued shares (explicit and auto) not applied yet. Local state only. */
+export function pendingShares(home = homedir(), env = process.env) {
+  return readState(home, accountScope(home, env)).shares.length;
+}
+
 function shareJob(item) {
   const project = item?.session?.project;
   if (!item?.sid || typeof project !== 'string' || !project) return null;
@@ -261,11 +266,12 @@ async function shareUploaded(client, token, job) {
 }
 
 // An explicit share the user asked for: straight to that org (no rule lookup). Refused for good is dropped by the caller's giveUp.
+const REFUSED = { 401: 'login rejected', 403: 'not a member', 404: 'session or org not found' };
 async function shareToOrg(client, token, job) {
   try {
     await client.shareSession({ sid: job.sid, orgId: job.orgId, token });
   } catch (error) {
-    if (giveUpShare(error)) return;
+    if (giveUpShare(error)) return { refused: `${error.status} ${REFUSED[error.status]}` };
     throw error;
   }
 }
@@ -505,22 +511,40 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
 // Explicit org shares (orgId) wait until the session is on the server (it has a cursor), so they run after the upload.
 async function flushShares({ client, creds, ctx, explicit = false }) {
   const state = readState(ctx.home, ctx.scope);
-  const jobs = state.shares.filter((j) => (explicit ? !!j.orgId : !j.orgId));
+  const now = Date.now();
+  const stale = (j) => j.at && now - Date.parse(j.at) > SHARE_JOB_MAX_AGE_MS;
+  const expired = state.shares.filter(stale);
+  if (expired.length) {
+    for (const j of expired) noteUpload(ctx.home, `share of session ${j.sid}${j.orgId ? ` to org ${j.orgId}` : ''} dropped: queued more than 7 days ago and never applied`);
+    const same = (a, b) => a.sid === b.sid && a.project === b.project && (a.orgId || '') === (b.orgId || '');
+    await persist(ctx, (st) => { st.shares = st.shares.filter((j) => !expired.some((d) => same(d, j))); });
+  }
+  const jobs = state.shares.filter((j) => !stale(j) && (explicit ? !!j.orgId : !j.orgId));
   if (!jobs.length) return;
-  const done = [];
+  const done = [], failures = [];
   for (const job of jobs) {
     if (explicit && typeof state.cursors[job.sid] !== 'number') {
       if (permanentSkip(state.skipped[job.sid])) done.push(job); // refused or deleted for good: it will never be there to share
       continue; // not uploaded yet: keep waiting for the next save
     }
-    try { await shareUploaded(client, creds.token, job); done.push(job); } catch (error) {
+    try {
+      const r = await shareUploaded(client, creds.token, job);
+      done.push(job);
+      if (r?.refused) {
+        failures.push({ sid: job.sid, title: job.title || job.sid, org: job.org || job.orgId, reason: r.refused, at: new Date().toISOString() });
+        noteUpload(ctx.home, `share of session ${job.sid} to org ${job.orgId} did not apply: ${r.refused}`);
+      }
+    } catch (error) {
       ctx.log(`upload queued: ${why(error)}`);
       break;
     }
   }
   if (done.length) {
     const same = (a, b) => a.sid === b.sid && a.project === b.project && (a.orgId || '') === (b.orgId || '');
-    await persist(ctx, (st) => { st.shares = st.shares.filter((j) => !done.some((d) => same(d, j))); });
+    await persist(ctx, (st) => {
+      st.shares = st.shares.filter((j) => !done.some((d) => same(d, j)));
+      if (failures.length) st.shareFailures = [...st.shareFailures, ...failures].slice(-20);
+    });
   }
 }
 
@@ -574,8 +598,9 @@ async function upload({ logPath, logText, home, env, cloud, project, sessionId, 
   await flushShares({ client, creds, ctx });
   const { pushed, queued, failed } = await deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, onProgress, full: new Map(projected.map((x) => [x.sid, x])) });
   await flushShares({ client, creds, ctx, explicit: true });
-  const pendingShare = readState(home, scope).shares.length > 0;
-  return { ok: queued === 0 && !pendingShare, queued: queued > 0 || pendingShare, pushed, queuedCount: queued, failed };
+  // turns waiting and shares waiting are separate: a leftover share must not read as turns that did not go up
+  const sharesPending = readState(home, scope).shares.length;
+  return { ok: queued === 0 && !sharesPending, queued: queued > 0, sharesPending, pushed, queuedCount: queued, failed };
 }
 
 /** Stop-hook path. It does not throw when the network is down. */
@@ -584,5 +609,32 @@ export async function teamMemoryHook(opts = {}) {
     return await pushFromLog(opts);
   } catch {
     return { ok: false, queued: true, pushed: 0 };
+  }
+}
+
+/**
+ * `spookling refresh`: retry what is queued for the logged-in account (turns, then shares) through the same path as the Stop hook,
+ * session claims included, and say what happened. Silent when nothing is queued or nobody is logged in.
+ */
+export async function flushQueued({ home = homedir(), env = process.env, cloud, write = (t) => process.stdout.write(t), timeoutMs } = {}) {
+  const line = (t) => write(`${t}\n`);
+  try {
+    if (!readCredentials({ home, env }).token) return { pushed: 0 };
+    if (!pendingUploads(home, env).sessions && !pendingShares(home, env)) return { pushed: 0 };
+    const r = await pushFromLog({ logText: '', home, env, cloud, timeoutMs, log: () => {} });
+    if (r.pushed) line(`Uploaded ${r.pushed} queued ${r.pushed === 1 ? 'session' : 'sessions'}.`);
+    const failed = r.failed || [];
+    if (failed.length) {
+      const untried = Math.max(0, (r.queuedCount || 0) - failed.length);
+      line(`${failed.length} queued ${failed.length === 1 ? 'session' : 'sessions'} could not be uploaded: ${[...new Set(failed.map((f) => f.why))].join('; ')}${untried ? `; ${untried} more not tried` : ''}.`);
+    } else if (r.queued) {
+      line(`${r.queuedCount || 'Some'} queued ${r.queuedCount === 1 ? 'session' : 'sessions'} did not go up. Try again later.`);
+    }
+    if (r.sharesPending) line(`${r.sharesPending} ${r.sharesPending === 1 ? 'share is' : 'shares are'} waiting for ${r.sharesPending === 1 ? 'its' : 'their'} session to upload.`);
+    for (const text of await takeShareFailures(home, env).catch(() => [])) line(text);
+    return r;
+  } catch {
+    line('Could not retry the queued uploads.');
+    return { pushed: 0 };
   }
 }

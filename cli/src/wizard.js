@@ -9,14 +9,15 @@ import { fileURLToPath } from 'node:url';
 import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, fits, paint, press, setFeed, setRaw, sleep, write as out } from './term.js';
 import { play } from './cutscene.js';
 import { flyOnce } from './ghost.js';
-import { ALLOW_SHARE_QUESTION, setShareDeclined, shareDeclined } from './allow-share.js';
+import { ALLOW_SHARE_QUESTION, forgetAdded, recordAdded, addedRules, setShareDeclined, shareDeclined } from './allow-share.js';
 import { stage } from './stage.js';
 import {
   HOOK_FILES, MCP_NAME, addHooks, addMcp, addPermissions, claudeDesktopConfigPath, commandsPath, hasPermissions, isOurShareCommand, removePermissions, shareCommand, SHARE_TOOLS, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
   wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath, STATUS_FILE, addStatusLine, removeStatusLine, isOurStatus,
   addCodexMcp, codexConfigPath, codexEntry, codexMcpEntry, codexMcpToml, installVersions, mcpCommand, ourHookCommands, removeCodexMcp,
 } from './hooks.js';
-import { pendingUploads, skipText, skippedSessionIds, uploadProblems } from './push.js';
+import { takeShareFailures } from './upload-state.js';
+import { pendingShares, pendingUploads, skipText, skippedSessionIds, uploadProblems } from './push.js';
 import { readCredentials, writeFileSecure } from './credentials.js';
 import { compareVersions, updateAvailable } from './registry.js';
 import { createRun, tilde } from './backup.js';
@@ -867,11 +868,15 @@ async function stepAllowShare(ctx, sp) {
     if (!ctx.dry && !want) setShareDeclined(true, homeOf(ctx));
   }
   if (!want) return info('Claude may not share sessions on its own. Use spookling share, or run init with --allow-share.');
+  // remember which rules are ours (not already the user's), so uninstall removes only those
+  let added = [];
+  try { if (!ctx.dry) { const allow = readJson(sp).permissions?.allow; added = SHARE_TOOLS.filter((r) => !(Array.isArray(allow) && allow.includes(r))); } } catch { /* mergeFile reports it */ }
   await mergeFile(ctx, sp, (s) => addPermissions(s), {
     what: 'permissions.allow: the Spookling share tools',
     preview: `"permissions": { "allow": ${JSON.stringify(SHARE_TOOLS, null, 2).replace(/\n/g, '\n    ')} }\n  merged in; your other rules stay. Spookling still asks you to confirm each share.`,
     same: `${rel(ctx, sp)} already lets Claude use the share tools`,
   });
+  try { if (!ctx.dry && added.length && hasPermissions(readJson(sp))) recordAdded(sp, added, homeOf(ctx)); } catch { /* the note is best effort */ }
 }
 
 // /spookling-share: the file is ours or it is not written
@@ -962,8 +967,8 @@ function cloudLine(line, home) {
     const who = creds.fromEnv && !creds.user ? 'SPOOKLING_TOKEN' : (creds.user?.email || creds.user?.name || creds.user?.id || 'saved login');
     const times = Object.values(readCache(home).orgs).map((o) => o.serverTime).filter((t) => t && !Number.isNaN(Date.parse(t))).sort();
     const sync = times.length ? times[times.length - 1] : null;
-    const { turns, sessions } = pendingUploads(home);
-    line('cloud', `logged in as ${who}; last sync ${sync || 'never'}; ${turns ? `${turns} turn${turns === 1 ? '' : 's'} in ${sessions} session${sessions === 1 ? '' : 's'} not uploaded yet` : 'no turns waiting to upload'}`, true);
+    const { turns, sessions } = pendingUploads(home), shares = pendingShares(home);
+    line('cloud', `logged in as ${who}; last sync ${sync || 'never'}; ${turns ? `${turns} turn${turns === 1 ? '' : 's'} in ${sessions} session${sessions === 1 ? '' : 's'} not uploaded yet` : 'no turns waiting to upload'}${shares ? `; ${shares} share${shares === 1 ? '' : 's'} waiting for the session to upload` : ''}`, true);
   } catch (e) { line('cloud', `could not read local cloud state: ${e.message}`, false); }
 }
 
@@ -1066,11 +1071,12 @@ function modelLine(line, m) {
 }
 
 // Sessions the uploader gave up on, and an expired login.
-function uploadLines(line, home) {
+async function uploadLines(line, home) {
   const held = skippedSessionIds(home);
   if (held.length) line('upload', `${held.join(', ')} skipped after seq_conflict`, false);
   const problems = uploadProblems(home);
   for (const x of problems.skipped) line('upload', `${x.sid} skipped for good: ${skipText(x.reason)}`, false);
+  for (const text of await takeShareFailures(home).catch(() => [])) line('share', text, false);
   if (problems.loginExpired && readCredentials({ home }).token) line('login', 'expired, run spookling login (the last upload was refused with 401)', false);
 }
 
@@ -1111,7 +1117,7 @@ export async function status(project = process.cwd(), get = stats, home = homedi
     const v = await updateAvailable({ home, current: VERSION, ...update }).catch(() => null);
     if (v) line('update', `${v} is available. Run spookling update.`, false);
   }
-  uploadLines(line, home);
+  await uploadLines(line, home);
   return s && !upgrade && ((claude && !missing.length) || (codex && codexScript)) ? 0 : 1;
 }
 
@@ -1125,11 +1131,14 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
   const ctx = newCtx(project, scope);
   const sp = harness === 'codex' ? codexHooksPath(project, scope) : settingsPath(project, scope);
   out(`${paint(C.GHOST, 'Removing Spookling Memory wiring', true)}  ${paint(C.GREY, scope === 'user' ? `${project} (user scope)` : project)}\n`);
-  await mergeFile(ctx, sp, harness === 'codex' ? removeHooks : (s) => removePermissions(removeStatusLine(removeHooks(s))), {
+  // only the allow rules Spookling itself added (share-allow.json); a rule the user had before stays
+  const ours = harness === 'codex' ? [] : addedRules(sp, homeOf(ctx));
+  await mergeFile(ctx, sp, harness === 'codex' ? removeHooks : (s) => removePermissions(removeStatusLine(removeHooks(s)), ours), {
     what: 'removed the Spookling hooks',
     preview: `drop only the Spookling hooks${harness === 'codex' ? '' : ', the share tools in permissions.allow and the ghost (your own status line comes back)'}; everything else stays`,
     same: `no Spookling hooks in ${rel(ctx, sp)}`,
   });
+  try { if (ours.length && !readJson(sp).permissions?.allow?.some((r) => ours.includes(r))) forgetAdded(sp, homeOf(ctx)); } catch { /* the note stays */ }
   if (harness === 'codex') {
     const cfg = codexConfigPath(project, scope), name = rel(ctx, cfg);
     const viaFile = () => mergeText(ctx, cfg, removeCodexMcp, {

@@ -7,7 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import { CloudError, apiBase, clean, createCloud, networkMessage } from './cloud.js';
 import { readCredentials } from './credentials.js';
 import { pushFromLog, projectLog, sessionTitle } from './push.js';
-import { accountScope, readState, updateState } from './upload-state.js';
+import { accountScope, readState, takeShareFailures, updateState } from './upload-state.js';
 
 const NOT_LOGGED_IN = 'Not logged in. Run spookling login first.';
 
@@ -174,6 +174,7 @@ function queuedShares(home, env, sid) {
 }
 
 async function queueShare(home, env, job) {
+  job = { ...job, at: new Date().toISOString() };
   await updateState(home, (st) => {
     if (!st.shares.some((j) => j.sid === job.sid && (j.orgId || '') === job.orgId)) st.shares = [...st.shares, job];
   }, { scope: accountScope(home, env) });
@@ -214,7 +215,7 @@ const view = (s, names) => ({
 });
 
 // Without sessionId: this account's sessions (newest first), optionally for one project.
-export async function shareStatus({ sessionId, project, env = process.env, home = homedir(), cloud: injected } = {}) {
+export async function shareStatus({ sessionId, project, env = process.env, home = homedir(), cloud: injected, notify = true } = {}) {
   const { cloud, error } = client(env, home, injected);
   if (error) return { error };
   const token = readCredentials({ env, home }).token;
@@ -225,6 +226,9 @@ export async function shareStatus({ sessionId, project, env = process.env, home 
       cloud.listAutoShare({ token }).catch(() => ({ rules: [] })),
     ]);
     const names = new Map(orgs.map((o) => [o.id, o.name]));
+    // queued shares that were dropped at flush: said once, then forgotten (the caller prints `notices`)
+    const notices = notify ? await takeShareFailures(home, env).catch(() => []) : [];
+    const note = notices.length ? { notices } : {};
     const autoShare = (rules?.rules || []).map((r) => ({ project: r.project, orgId: r.orgId, org: names.get(r.orgId) || r.orgId }));
     if (sessionId) {
       const hit = mine.find((s) => s.clientId === sessionId);
@@ -232,14 +236,14 @@ export async function shareStatus({ sessionId, project, env = process.env, home 
         const q = queuedShares(home, env, sessionId);
         if (q.length) {
           const where = q.map((j) => names.get(j.orgId) || j.orgId);
-          return { sessionId, visibility: 'share pending', pendingOrgs: where, message: `Share pending: will be shared with ${where.join(', ')} after this session's next save.`, autoShare };
+          return { sessionId, visibility: 'share pending', pendingOrgs: where, message: `Share pending: will be shared with ${where.join(', ')} after this session's next save.`, autoShare, ...note };
         }
       }
-      if (!hit) return { sessionId, visibility: 'not uploaded', message: 'This session has not been uploaded yet (it uploads when it stops). Nothing is shared.', autoShare };
+      if (!hit) return { sessionId, visibility: 'not uploaded', message: 'This session has not been uploaded yet (it uploads when it stops). Nothing is shared.', autoShare, ...note };
       const v = view(hit, names);
-      return { ...v, autoShare: autoShare.filter((r) => r.project === v.project) };
+      return { ...v, autoShare: autoShare.filter((r) => r.project === v.project), ...note };
     }
-    return { sessions: mine.map((s) => view(s, names)), autoShare: project ? autoShare.filter((r) => r.project === project) : autoShare };
+    return { sessions: mine.map((s) => view(s, names)), autoShare: project ? autoShare.filter((r) => r.project === project) : autoShare, ...note };
   } catch (e) {
     return { error: explain(e, env, home) };
   }
@@ -249,11 +253,14 @@ export async function shareStatus({ sessionId, project, env = process.env, home 
 // A session not on the server yet is uploaded now from its local log (the Stop hook's path); if that cannot be done it is queued, and
 // the next upload applies it. sessionId may be left out: it is then the current session (see currentSession).
 export async function setSessionShare({ sessionId, share, org, projectDir = process.cwd(), env = process.env, home = homedir(), cloud: injected } = {}) {
+  let explicitId = !!sessionId;
   if (!sessionId) {
     const cur = await currentSession({ env, home, projectDir, cloud: injected });
     if (cur.error) return { error: cur.error };
     sessionId = cur.sessionId;
   }
+  // the session this terminal runs in may not have logged a turn yet: that one may wait in the queue
+  if (['SPOOKLING_SESSION_ID', 'CLAUDE_SESSION_ID'].some((k) => typeof env[k] === 'string' && env[k].trim() === sessionId)) explicitId = false;
   const { cloud, error } = client(env, home, injected);
   if (error) return { error };
   const creds = readCredentials({ env, home });
@@ -293,9 +300,11 @@ export async function setSessionShare({ sessionId, share, org, projectDir = proc
           mine = uploadFailed ? undefined : await onServer().catch(() => undefined);
         }
       }
+      // an id the user typed that is in no local log and not on the server is a typo: queueing it would wait forever
+      if (!mine && explicitId && !localSession(sessionId, { projectDir, home, env })) return { error: `No session ${sessionId} found here or in the cloud` };
       if (!mine) {
         const o = targets[0];
-        await queueShare(home, env, { sid: sessionId, project, orgId: o.id });
+        await queueShare(home, env, { sid: sessionId, project, orgId: o.id, org: o.name, title: localSession(sessionId, { projectDir, home, env })?.title || sessionId });
         // the Stop hook may have finished its upload (and its share flush) while this ran: look once more, so the job is not left waiting
         if (!uploadFailed && (mine = await onServer().catch(() => undefined))) await dropQueued(home, env, sessionId, o.id);
       }

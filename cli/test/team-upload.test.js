@@ -151,7 +151,8 @@ test('auto-share shares a matching project after upload and retries a down share
     logText: `${line('abc', 'hello')}\n`, home, env: {}, cloud, project: 'spookling-memory', log: () => {},
   });
   assert.equal(first.ok, false);
-  assert.equal(first.queued, true);
+  assert.equal(first.queued, false, 'the turns went up: only a share waits');
+  assert.equal(first.sharesPending, 1);
   assert.deepEqual(shares, []);
   const state = JSON.parse(readFileSync(join(home, '.spookling', 'upload-state.json'), 'utf8'));
   assert.equal(state.cursors.abc, 0);

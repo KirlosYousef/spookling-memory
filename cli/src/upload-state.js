@@ -1,7 +1,7 @@
 // ~/.spookling/upload-state.json: what has been uploaded, what is waiting, what is skipped. Several uploaders can run at once
 // (two sessions stopping together, a Stop during `login`'s backfill, `spookling share`), so every change is a locked
 // read-modify-write: read the file again, change it, write it, release. No network call is ever made while the lock is held.
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -29,12 +29,37 @@ export function shareJobs(raw) {
     const orgId = typeof item.orgId === 'string' && item.orgId ? item.orgId : '';
     if (typeof item.project !== 'string' || (!item.project && !orgId)) continue;
     if (jobs.some((job) => job.sid === item.sid && job.project === item.project && (job.orgId || '') === orgId)) continue;
-    jobs.push({ sid: item.sid, project: item.project, ...(orgId ? { orgId } : {}) });
+    const text = (v, n) => (typeof v === 'string' && v ? { v: v.slice(0, n) } : null);
+    const at = typeof item.at === 'string' && !Number.isNaN(Date.parse(item.at)) ? item.at : '';
+    jobs.push({
+      sid: item.sid, project: item.project, ...(orgId ? { orgId } : {}),
+      ...(at ? { at } : {}), ...(text(item.title, 120) ? { title: item.title.slice(0, 120) } : {}), ...(text(item.org, 80) ? { org: item.org.slice(0, 80) } : {}),
+    });
   }
   return jobs;
 }
 
-const blank = () => ({ cursors: {}, skipped: {}, queue: [], shares: [], auth: null, forkModes: {}, links: {} });
+// A queued share that was dropped for good, kept until the user has been told: { sid, title, org, reason, at }
+export function shareFailures(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((f) => f && typeof f.sid === 'string' && typeof f.reason === 'string' && f.reason)
+    .map((f) => ({ sid: f.sid, title: String(f.title || f.sid).slice(0, 120), org: String(f.org || '').slice(0, 80), reason: f.reason.slice(0, 120), at: String(f.at || '') }));
+}
+
+export const SHARE_JOB_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+
+/** A line in ~/.spookling/upload.log (the same file the Stop hook writes). Never throws. */
+export function noteUpload(home, message) {
+  try {
+    const dir = join(home, '.spookling');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = join(dir, 'upload.log');
+    appendFileSync(path, `${message}\n`);
+    if (process.platform !== 'win32') chmodSync(path, 0o600);
+  } catch { /* logging must not break anything */ }
+}
+
+const blank = () => ({ cursors: {}, skipped: {}, queue: [], shares: [], shareFailures: [], auth: null, forkModes: {}, links: {} });
 
 function normalize(raw) {
   return {
@@ -42,13 +67,14 @@ function normalize(raw) {
     skipped: raw?.skipped && typeof raw.skipped === 'object' ? raw.skipped : {},
     queue: Array.isArray(raw?.queue) ? raw.queue : [],
     shares: shareJobs(raw?.shares),
+    shareFailures: shareFailures(raw?.shareFailures),
     auth: raw?.auth && typeof raw.auth === 'object' && raw.auth.expired ? { expired: true, at: String(raw.auth.at || '') } : null,
     forkModes: raw?.forkModes && typeof raw.forkModes === 'object' ? raw.forkModes : {},
     links: raw?.links && typeof raw.links === 'object' ? raw.links : {},
   };
 }
 
-const hasData = (st) => Object.keys(st.cursors).length || Object.keys(st.skipped).length || st.queue.length || st.shares.length
+const hasData = (st) => Object.keys(st.cursors).length || Object.keys(st.skipped).length || st.queue.length || st.shares.length || st.shareFailures.length
   || Object.keys(st.forkModes).length || Object.keys(st.links).length;
 
 /**
@@ -150,4 +176,24 @@ export async function claimSession(home, sid) {
   const path = join(home, '.spookling', 'claims', createHash('sha256').update(sid).digest('hex').slice(0, 32));
   if (!(await takeFile(path, { staleMs: CLAIM_STALE_MS, waitMs: 0 }))) return null;
   return () => drop(path);
+}
+
+/** Dropped queued shares not yet shown to the user. Local only. */
+export function peekShareFailures(home, env = process.env) {
+  return readState(home, accountScope(home, env)).shareFailures;
+}
+
+export const failureText = (f) => `Share of '${f.title}' to ${f.org || 'the org'} did not apply: ${f.reason}`;
+
+/** The dropped-share notes as text lines, and forget them: they are shown once. Throws StateBusy only if the lock stays taken. */
+export async function takeShareFailures(home, env = process.env) {
+  const scope = accountScope(home, env);
+  if (!readState(home, scope).shareFailures.length) return [];
+  try {
+    const list = await updateState(home, (st) => { const l = st.shareFailures; st.shareFailures = []; return l; }, { scope });
+    return list.map(failureText);
+  } catch (e) {
+    if (e instanceof StateBusy) return readState(home, scope).shareFailures.map(failureText); // shown now, cleared next time
+    throw e;
+  }
 }

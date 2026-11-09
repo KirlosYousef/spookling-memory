@@ -7,7 +7,7 @@ import { writeCredentials } from '../src/credentials.js';
 import { pickOrg, setProjectAutoShare, setSessionShare, shareStatus, webUrl } from '../src/share.js';
 import { formatShare, main } from '../src/main.js';
 import { accountScope, readState } from '../src/upload-state.js';
-import { pushFromLog } from '../src/push.js';
+import { flushQueued, pushFromLog } from '../src/push.js';
 
 const home = () => {
   const h = tmpHome('spk-share-');
@@ -137,7 +137,7 @@ test('with no turns logged yet the share is queued, and status says so', async (
   const h = home();
   const dir = projectWithLog(h, 'new1', { turns: 0 });
   const cloud = storingCloud();
-  const out = await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud });
+  const out = await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud, env: { SPOOKLING_SESSION_ID: 'new1' } });
   assert.deepEqual([out.ok, out.pending], [true, true]);
   assert.equal(out.message, "Will be shared with Org test after this session's next save.");
   assert.deepEqual(cloud.calls, []);
@@ -165,7 +165,7 @@ test('a failed upload queues the share; the next successful save applies it', as
 test('a queued share is not applied before the session is on the server', async () => {
   const h = home();
   const dir = projectWithLog(h, 'new1', { turns: 0 });
-  await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud: storingCloud() });
+  await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud: storingCloud(), env: { SPOOKLING_SESSION_ID: 'new1' } });
   const up = storingCloud();
   await pushFromLog({ logText: '', home: h, cloud: up, log: () => {} });
   assert.deepEqual(up.calls, []);
@@ -176,7 +176,7 @@ test('unshare of a queued share removes the queued job', async () => {
   const h = home();
   const dir = projectWithLog(h, 'new1', { turns: 0 });
   const cloud = storingCloud();
-  await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud });
+  await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud, env: { SPOOKLING_SESSION_ID: 'new1' } });
   const out = await setSessionShare({ sessionId: 'new1', share: false, projectDir: dir, home: h, cloud });
   assert.equal(out.ok, true);
   assert.match(out.message, /Cancelled the pending share/);
@@ -297,8 +297,89 @@ test('spookling share <id> --yes with an id that is not uploaded uploads it, or 
   assert.equal(up.code, 0);
   assert.deepEqual(cloud.calls, [['share', 'new1', 'o1']]);
   const none = storingCloud();
-  const queued = await runCli(['share', 'later1', '--yes', '--org', 'Org test'], { home: h, cwd: dir, env: {}, tty: false, share: { status: shareStatus, session: (a) => setSessionShare({ ...a, cloud: none }) } });
+  const queued = await runCli(['share', 'later1', '--yes', '--org', 'Org test'], { home: h, cwd: dir, env: { SPOOKLING_SESSION_ID: 'later1' }, tty: false, share: { status: shareStatus, session: (a) => setSessionShare({ ...a, cloud: none }) } });
   assert.equal(queued.code, 0);
   assert.match(queued.out, /Will be shared with Org test after this session's next save/);
   assert.deepEqual(readState(h, accountScope(h)).shares.map((j) => j.sid), ['later1']);
+});
+
+// ---- review fixes ----
+
+import { readFileSync, existsSync } from 'node:fs';
+import { takeShareFailures } from '../src/upload-state.js';
+import { CloudError } from '../src/cloud.js';
+
+test('a mistyped explicit id (no local log, not on the server) is an error and queues nothing', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'real1');
+  const out = await setSessionShare({ sessionId: 'typo9', share: true, projectDir: dir, home: h, env: {}, cloud: storingCloud() });
+  assert.equal(out.error, 'No session typo9 found here or in the cloud');
+  assert.deepEqual(readState(h, accountScope(h)).shares, []);
+});
+
+test('a queued share older than 7 days is dropped with a note in upload.log', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1', { turns: 0 });
+  await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud: storingCloud(), env: { SPOOKLING_SESSION_ID: 'new1' } });
+  const path = join(h, '.spookling', 'upload-state.json');
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  raw.shares[0].at = new Date(Date.now() - 8 * 24 * 3600 * 1000).toISOString();
+  writeFileSync(path, JSON.stringify(raw));
+  await pushFromLog({ logText: '', home: h, cloud: storingCloud(), log: () => {} });
+  assert.deepEqual(readState(h, accountScope(h)).shares, []);
+  assert.match(readFileSync(join(h, '.spookling', 'upload.log'), 'utf8'), /share of session new1 .* dropped: queued more than 7 days/);
+});
+
+test('a share refused at flush is recorded, shown once by status, then cleared', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1');
+  const down = storingCloud({ failUpload: true });
+  await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud: down });
+  const up = storingCloud();
+  up.shareSession = async () => { throw new CloudError('no', { status: 403 }); };
+  const r = await pushFromLog({ logPath: join(dir, '.memory', 'log.jsonl'), home: h, cloud: up, project: 'proj', sessionId: 'new1', log: () => {} });
+  assert.equal(r.queued, false, 'no turns are waiting');
+  assert.equal(r.sharesPending, 0);
+  assert.deepEqual(readState(h, accountScope(h)).shares, []);
+  const st = await shareStatus({ sessionId: 'new1', home: h, cloud: up });
+  assert.deepEqual(st.notices, ["Share of 'Build the thing' to Org test did not apply: 403 not a member"]);
+  assert.match(formatShare(st), /did not apply: 403 not a member/);
+  assert.deepEqual((await shareStatus({ sessionId: 'new1', home: h, cloud: up })).notices, undefined);
+  assert.deepEqual(await takeShareFailures(h), []);
+});
+
+test('a leftover pending share does not make pushFromLog report queued turns', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1', { turns: 0 });
+  await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud: storingCloud(), env: { SPOOKLING_SESSION_ID: 'new1' } });
+  const r = await pushFromLog({ logText: '', home: h, cloud: storingCloud(), log: () => {} });
+  assert.equal(r.queued, false);
+  assert.equal(r.sharesPending, 1);
+});
+
+test('spookling refresh retries queued uploads and shares, and says what happened', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1');
+  const down = storingCloud({ failUpload: true });
+  await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud: down });
+  let said = '';
+  await flushQueued({ home: h, cloud: down, write: (t) => { said += t; } });
+  assert.match(said, /1 queued session could not be uploaded: 503\.\n1 share is waiting/);
+  said = '';
+  const up = storingCloud();
+  await flushQueued({ home: h, cloud: up, write: (t) => { said += t; } });
+  assert.match(said, /Uploaded 1 queued session\./);
+  assert.deepEqual(up.calls, [['share', 'new1', 'o1']]);
+  assert.deepEqual(readState(h, accountScope(h)).shares, []);
+  said = '';
+  await flushQueued({ home: h, cloud: up, write: (t) => { said += t; } });
+  assert.equal(said, '', 'nothing queued: silent');
+});
+
+test('the refresh command flushes after pulling the feeds', async () => {
+  const h = home();
+  let flushed = 0;
+  const r = await runCli(['refresh'], { home: h, env: {}, refresh: async () => 0, flush: async () => { flushed += 1; } });
+  assert.equal(r.code, 0);
+  assert.equal(flushed, 1);
 });
