@@ -139,7 +139,7 @@ def test_an_empty_prompt_injects_nothing(open_store, prompt):
     assert c.post("/v1/hook/user-prompt-submit", json={"session_id": "x", "prompt": prompt}).json() == {}
 
 
-def test_a_missing_model_key_is_a_503_and_the_server_lives(open_store):
+def test_a_missing_model_key_still_saves_the_turns_and_the_server_lives(open_store):
     class NoKey(Stub):
         def judge(self, turns, date, known):
             raise SystemExit("OPENROUTER_API_KEY is not set")  # what core.models does
@@ -148,10 +148,12 @@ def test_a_missing_model_key_is_a_503_and_the_server_lives(open_store):
     c = client(store)
     store.mem.triage = NoKey(TAGS)
     r = c.post("/v1/ingest", json={"id": "s1", "ts": "2024-05-22T10:00:00Z", "turns": turns(["I drive a Toyota Corolla, nothing fancy."])})
-    assert r.status_code == 503 and "OPENROUTER_API_KEY" in r.json()["detail"]
+    assert r.status_code == 200 and r.json()["logged"] == 2 and "not answering" in r.json()["note"]  # saved, judged later
+    assert "OPENROUTER_API_KEY" in c.get("/v1/stats").json()["model"]["error"]
     store.mem.triage = Stub(TAGS)
-    assert c.post("/v1/ingest", json={"id": "s2", "ts": "2024-05-23T10:00:00Z", "turns": turns(["How do I roast peppers?"])}).status_code == 200
-    assert c.get("/v1/stats").json()["n_events"] == 4  # the first session waited in memory
+    store._retry_at = 0
+    assert c.post("/v1/ingest", json={"id": "s2", "ts": "2024-05-23T10:00:00Z", "turns": turns(["How do I roast peppers?"])}).json() == {"logged": 2}
+    assert c.get("/v1/stats").json()["n_events"] == 4
 
 
 def test_injected_context_fits_claude_codes_cap():
