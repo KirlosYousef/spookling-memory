@@ -21,7 +21,7 @@ const PATTERNS = [
   [/\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, MASK], // JWT: header.payload.signature
   [/\b([a-z][a-z0-9+.-]{0,20}:\/\/)[^\s:/@]+:[^\s/]+@/gi, `$1${MASK}@`], // scheme://user:pass@host; pass runs to the last @
   [/([?&](?:token|access_token|api[_-]?key|key|password|secret|sig|signature)=)[^&\s#]+/gi, `$1${MASK}`],
-  [/(\bcurl\b[^\n]*?\s-u\s+)\S+:\S+/gi, `$1${MASK}`], // curl -u user:pass
+  [/(\bcurl\b[^\n]{0,1000}?\s-u\s+)\S+:\S+/gi, `$1${MASK}`], // curl -u user:pass
   [/\b(?:sk-[A-Za-z0-9_-]{20,}|A[KS]IA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{30,})\b/g, MASK], // OpenAI and Anthropic, AWS, GitHub
   [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, MASK],
   [/\bglpat-[A-Za-z0-9_-]{20,}/g, MASK],

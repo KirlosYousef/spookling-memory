@@ -44,7 +44,7 @@ PATTERNS = [
     (re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"), MASK),
     (re.compile(r"\b([a-z][a-z0-9+.-]{0,20}://)[^\s:/@]+:[^\s/]+@", I), r"\1" + MASK + "@"),
     (re.compile(r"([?&](?:token|access_token|api[_-]?key|key|password|secret|sig|signature)=)[^&\s#]+", I), r"\1" + MASK),
-    (re.compile(r"(\bcurl\b[^\n]*?\s-u\s+)\S+:\S+", I), r"\1" + MASK),
+    (re.compile(r"(\bcurl\b[^\n]{0,1000}?\s-u\s+)\S+:\S+", I), r"\1" + MASK),
     (re.compile(r"\b(?:sk-[A-Za-z0-9_-]{20,}|A[KS]IA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{30,})\b"), MASK),
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), MASK),
     (re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"), MASK),
