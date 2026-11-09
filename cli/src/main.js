@@ -48,6 +48,8 @@ const HELP = `Spookling Memory
   --scope user      init/uninstall: user harness files ($CODEX_HOME/hooks.json for Codex)
   --harness codex   uninstall: remove Codex hooks (default: claude); init asks which harness to use
   --no-ghost        init: do not ask to put the ghost in the Claude Code status line
+  --allow-share     init: let Claude share sessions when you ask (adds the share tools to permissions.allow; each share is still confirmed)
+  --no-allow-share  init: do not add them (without either flag, init asks at a terminal and skips it otherwise)
   --no-anim         skip the animation (also skipped when NO_COLOR is set or output is not a terminal)
   --fast            demo only: no pauses (any key also skips the current one)
   --frames N        demo only: print N frames from across the intro, one after another, and stop
@@ -204,7 +206,11 @@ async function route(args, deps) {
     if (warning) process.stderr.write(`${warning}\n`);
   }
   switch (cmd) {
-    case 'init': return args.includes('--update') ? fns.initUpdate({ project: cwd, home }) : fns.init({ anim, scope, project: folder, ghost });
+    case 'init': {
+      if (args.includes('--allow-share') && args.includes('--no-allow-share')) usage('use --allow-share or --no-allow-share, not both');
+      const allowShare = args.includes('--allow-share') ? true : args.includes('--no-allow-share') ? false : undefined;
+      return args.includes('--update') ? fns.initUpdate({ project: cwd, home, allowShare }) : fns.init({ anim, scope, project: folder, ghost, allowShare });
+    }
     case 'demo': {
       const n = flag(args, 'frames', 'takes a number');
       return n !== undefined ? (frames(Math.max(1, Number(n) || 3)), 0) : fns.init({ anim, scope, dry: true, fast, ghost });

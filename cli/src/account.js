@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { VERSION, apiBase, clean, createCloud, isNetworkError, networkMessage } from './cloud.js';
 import { readCredentials, removeStoredToken, setDefaultOrg, writeCredentials } from './credentials.js';
 import { clearLoginExpired, deletedSessionIds, pushFromLog, projectLog, uploadedCursors } from './push.js';
+import { offerAllowShare } from './allow-share.js';
 import { orgRecords } from './team.js';
 import { cachedNotice } from './registry.js';
 
@@ -265,6 +266,7 @@ async function finishLogin({ data, origin, client, label, home, env, cloud, cwd,
   say(write, name ? `Logged in as ${name}.` : 'Logged in.');
   await chooseDefaultOrg({ client, token: data.token, home, write, choose: choose || term.choose });
   await backfill({ home, cwd, env, cloud, write, confirm: confirm || term.confirm, tty });
+  await offerAllowShare({ home, cwd: cwd || process.cwd(), env, write: (s) => write(s), confirm: confirm || term.confirm, tty });
 }
 
 export async function login({

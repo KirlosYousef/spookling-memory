@@ -22,7 +22,10 @@ from mcp.server.mcpserver import Context, MCPServer
 from pydantic import BaseModel, Field
 
 server = MCPServer("spookling-memory", instructions="Long-term memory for this user, kept on this machine. "
-                   "memory_retrieve before answering from what the user said in past sessions.")
+                   "memory_retrieve before answering from what the user said in past sessions. "
+                   "If memory_share is blocked or refused (a permission denial, or no confirmation dialog), do not retry it, "
+                   "do not try another tool or a Bash command to share, and do not change any settings. Tell the user to run "
+                   "`spookling share` in a terminal, or `/spookling-share` in this chat; running it is their own confirmation.")
 _open = urllib.request.build_opener(urllib.request.ProxyHandler({})).open  # never send local memory through a proxy
 
 
