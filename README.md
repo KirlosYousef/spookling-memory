@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · `spookling` 0.2.0 · October 2026*
+*Algorithm v2.1 · `spookling` 0.2.1 · November 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -245,7 +245,9 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost is the status line.
 
-Spookling Memory is out as `spookling` 0.2.0, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
+Spookling Memory is out as `spookling` 0.2.1, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
+
+New in 0.2.1: turns are saved before any model is called, so a tagger key that runs out or stops working no longer loses a chat ([When the tagger key stops working](#when-the-tagger-key-stops-working)); every assistant reply in a turn is logged, not only the last one; turns can be up to 16,000 characters; `spookling backfill` puts back turns missing from `.memory/`; and `spookling delete` (or `memory_delete` from chat) removes uploaded sessions from the cloud.
 
 **Upgrading.** On 0.1.x, run `npx spookling init` once. From 0.2 on, run `spookling update`. Why: [Updating](#updating).
 
@@ -315,6 +317,10 @@ Every file is shown before it is written, and `n` skips it. Without a terminal (
 
 To switch, stop the server (`uninstall` offers to) and run `init` again. `status` shows which tagger is running.
 
+### When the tagger key stops working
+
+Every turn is written to `.memory/log.jsonl` before the tagger is asked, so a key that is over its limit, invalid or out of credit never loses a chat, and uploads keep working. The server stops calling the model, `status` shows a `model` line with the reason and the time, and the hooks answer without recall instead of failing. Turns not yet tagged wait in `.memory/pending.json` and are tagged on the next call that works, or when the server starts again. Top up or change the key in `.memory/keys.env`, then run `spookling init --update`. Turns an older version dropped while the key was failing come back with `spookling backfill`.
+
 ### What it writes
 
 | Where | What |
@@ -340,7 +346,7 @@ Most people never need these.
 ```bash
 spookling update                 # install the newest version and re-wire everything you already set up
 spookling update --check         # only report: exit 0 when current, 10 when an update is available
-spookling update --version 0.2.1 [--force]   # a specific version (0.2.1 is just an example); going backwards needs --force
+spookling update --version 0.2.0 --force   # a specific version (0.2.0 is just an example); going backwards needs --force
 ```
 
 From 0.2 on, `spookling update` is the way to upgrade. 0.1.x has no `update` command, so on 0.1.x run `npx spookling init` once first. Either way, each version installs into its own folder under `~/.spookling-memory/` and `init` leaves the old one in place, so your hooks and MCP entries keep using the old folder (it still works) until you do.
@@ -368,7 +374,7 @@ spookling restore 20261104-183005 --yes   # without a terminal
 
 ### Upgrading by hand
 
-Until `init` or `update` re-points them, a new version's changes (new MCP tools, title and project fixes) do not reach your hooks and MCP entries. In the meantime `status` exits 1 and shows a line like `! upgrade  hooks still use 0.1.3. Run spookling update to finish upgrading to 0.2.0.` (the versions are an example). On 0.1.x, finish with `npx spookling init`, as in [Updating](#updating).
+Until `init` or `update` re-points them, a new version's changes (new MCP tools, title and project fixes) do not reach your hooks and MCP entries. In the meantime `status` exits 1 and shows a line like `! upgrade  hooks still use 0.1.3. Run spookling update to finish upgrading to 0.2.1.` (the versions are an example). On 0.1.x, finish with `npx spookling init`, as in [Updating](#updating).
 
 ### Where it runs
 

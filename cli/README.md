@@ -23,6 +23,8 @@ npx spookling sessions [project] [--limit N | --all]   # your uploaded sessions,
 npx spookling share <session id> [--org <id or name>]     # share a session with an org
 npx spookling unshare <session id> [--org <id or name>]   # stop sharing it (all orgs without --org)
 npx spookling autoshare <project> on|off [--org <id or name>] [--backfill]   # share every new session of a project
+npx spookling delete <session id> [--yes]   # delete one uploaded session from the cloud; .memory/ is not touched
+npx spookling delete --all [--yes]          # delete every session you uploaded (asks you to type DELETE; --yes without a terminal)
 ```
 
 `orgs`, `refresh` and the sharing commands need a saved login (or `SPOOKLING_TOKEN`, see [Advanced](#advanced)); without one they say so and exit 1. `whoami` exits 1 when logged out. An unknown command prints `Unknown command: <name>` to stderr, then the help, and exits 1; a bare `spookling`, `help`, `-h` and `--help` print the help and exit 0. `orgs` lists the orgs where you are an active member; `--org` takes either column. See [Team memory](#team-memory).
@@ -302,7 +304,7 @@ Each version installs into its own folder, and `init` never touches the old one.
 
 - Your hooks, MCP entries (Claude, the desktop app, Codex) and the `spookling` command keep pointing at the old folder, which still works: the memory hooks, and any upload code that version had, keep running as they were.
 - A new version's changes (new MCP tools, title and project fixes) arrive only when those are re-pointed.
-- `status` shows one line, for example `! upgrade  hooks still use 0.1.3. Run spookling update to finish upgrading to 0.2.0.`, in place of "scripts missing". `scripts missing` stays for the real case: wired to this version, but the files are gone.
+- `status` shows one line, for example `! upgrade  hooks still use 0.1.3. Run spookling update to finish upgrading to 0.2.1.`, in place of "scripts missing". `scripts missing` stays for the real case: wired to this version, but the files are gone.
 - `status` exits 1 while an upgrade is pending.
 
 ## Tested
