@@ -178,6 +178,13 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
       if (cursor) q.set('cursor', cursor);
       return call(`/memory/sessions?${q}`, { method: 'GET', token: t || auth() });
     },
+    deleteSession({ sid, token: t }) {
+      return call(`/memory/sessions/${encodeURIComponent(sid)}`, { method: 'DELETE', token: t || auth() });
+    },
+    // one batch; the caller loops while `remaining` > 0
+    deleteAllSessions({ token: t } = {}) {
+      return call('/memory/sessions', { method: 'DELETE', token: t || auth() });
+    },
     setAutoShare({ project, orgId, backfill, token: t }) {
       return call(`/memory/projects/${encodeURIComponent(project)}/autoshare/${encodeURIComponent(orgId)}`, {
         method: 'PUT',

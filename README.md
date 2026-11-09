@@ -276,6 +276,7 @@ npx spookling refresh              # pull the org feeds into the local cache
 npx spookling sessions [project]   # your newest 20 uploaded sessions (--all, --limit N)
 npx spookling share <session id>   # share a session with an org (unshare to stop)
 npx spookling autoshare <project> on|off   # share every new session of a project
+npx spookling delete <session id>   # delete an uploaded session from the cloud (--all for every one)
 ```
 
 The team commands are explained under [Team memory](#team-memory), `update` under [Updating](#updating) and `restore` under [Backups and restore](#backups-and-restore); `cli/README.md` has the flags.
@@ -422,9 +423,13 @@ spookling sessions [project] [--limit N | --all]   # newest 20 uploaded sessions
 spookling share <session id> [--org <id or name>]
 spookling unshare <session id> [--org <id or name>]   # all orgs without --org
 spookling autoshare <project> on|off [--org <id or name>] [--backfill]
+spookling delete <session id> [--yes]   # delete one uploaded session from the cloud
+spookling delete --all [--yes]          # delete all of yours, in batches
 ```
 
 `--org` can be left out: `share` and `autoshare on` then use your default org (saved at login), or your only org. `unshare`, `autoshare off` and `refresh` without `--org` cover every org. `autoshare on` shares every new session of that project; `--backfill` also shares the ones already uploaded. `off` removes the rule; sessions already shared stay shared. Sharing shows the cleaned turns to every active member of the org, and unsharing hides them again but cannot un-tell someone who already read them. The org owns what is shared to it.
+
+**Delete.** `spookling delete <session id>` removes one uploaded session from the cloud; `spookling delete --all` removes every session you uploaded. It deletes the cloud copy only: local memory (`.memory/`) is never touched. On a terminal it asks first (`--all` asks you to type `DELETE`); without a terminal it refuses unless you pass `--yes`. Sessions shared with an org belong to the org: they are kept and listed as skipped. A deleted session is marked in `~/.spookling/upload-state.json` and never uploads again, even if you keep working in it; sessions you start later upload as usual. Deleting a session that is already gone counts as done. The MCP tool `memory_delete(session_id | all=true)` does the same from chat, and always opens a yes/no dialog first (for one session and for all); a client that cannot show it gets the `spookling delete` command to run instead.
 
 You can also ask in the chat: when you are logged in, the prompt hook tells Claude the session id (and nothing else), and the MCP tools `memory_share`, `memory_autoshare` and `memory_share_status` do the same as the commands above. Sharing from chat (`memory_share`, `memory_autoshare on`, and always `--backfill`) first opens a yes/no dialog in your client (MCP elicitation) that names the session or project, the org and, for a backfill, how many sessions; nothing happens without your yes. If your client cannot show that dialog, the tool does nothing and tells Claude to have you run the `spookling share` or `spookling autoshare` command yourself. Unsharing and `autoshare off` reduce exposure and need no confirmation. Text inside a colleague's session can never trigger any of this. `memory_export` and `memory_import` read and write only `~/.spookling/exports/`, and `memory_export` will not replace a file unless `overwrite` is true.
 

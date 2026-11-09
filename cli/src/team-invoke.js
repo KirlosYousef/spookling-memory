@@ -1,5 +1,6 @@
 // stdin-free argv bridge so the local MCP server can call the team tools without HTTP.
 import { shareTarget, teamSession, teamSessions } from './team.js';
+import { deleteAllSessions, deleteSession } from './delete.js';
 import { setProjectAutoShare, setSessionShare, shareStatus } from './share.js';
 
 const name = process.argv[2];
@@ -12,6 +13,8 @@ const tools = {
   'share-target': shareTarget,
   share: setSessionShare,
   autoshare: setProjectAutoShare,
+  delete: deleteSession,
+  'delete-all': deleteAllSessions,
 };
 // an unknown name is an error, not a quiet team_sessions
 const out = Object.hasOwn(tools, name) ? await tools[name](args) : { error: `Unknown team tool: ${String(name).slice(0, 40)}` };
