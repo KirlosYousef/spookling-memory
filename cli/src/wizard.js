@@ -1015,6 +1015,19 @@ function keysLine(line, project, tagger) {
     (!need || names.includes(need)) && (!mode || mode === 0o600));
 }
 
+// The model key is failing: the server latched a 401/403/402 and asks no more. Turns are still saved (and upload); only the
+// memory extraction waits. Also a model that does not answer without a key error, while turns wait for it.
+const KEY_STATE = { limit: 'over its limit', credit: 'out of credit', key: 'refused (invalid or disabled)' };
+function modelLine(line, m) {
+  const st = m?.stopped;
+  if (st) {
+    const who = { openrouter: 'OpenRouter', anthropic: 'Anthropic' }[st.provider] ?? st.provider;
+    const since = String(st.since ?? '').slice(0, 16).replace('T', ' ');
+    return line('model', `${who} key ${KEY_STATE[st.kind] ?? 'failing'}${since ? ` since ${since} UTC` : ''}: turns are still saved and upload; memory extraction is paused. Top up the key or change it in .memory/keys.env, then restart (spookling init --update).`, false);
+  }
+  if (m?.error && m.owed) line('model', `not answering (${String(m.error).slice(0, 120)}): ${m.owed} item${m.owed === 1 ? '' : 's'} waiting for memory extraction; turns are still saved and upload. It is tried again.`, false);
+}
+
 // Sessions the uploader gave up on, and an expired login.
 function uploadLines(line, home) {
   const held = skippedSessionIds(home);
@@ -1055,6 +1068,7 @@ export async function status(project = process.cwd(), get = stats, home = homedi
   line('harness', [claude && 'Claude Code', codex && 'Codex (configured; trust checked in /hooks)'].filter(Boolean).join(', ') || 'none wired', claude || codex);
   line('tagger', s?.tagger ? taggerText(s.tagger) : 'unknown (the server is down, or older than this wizard)', !!s?.tagger);
   keysLine(line, project, s?.tagger);
+  modelLine(line, s?.model);
   cloudLine(line, home);
   if (!noUpdate) {
     const v = await updateAvailable({ home, current: VERSION, ...update }).catch(() => null);

@@ -149,6 +149,29 @@ test('status names the wired tagger, and the key it needs', async () => {
   assert.equal((await run(null))('tagger'), '! tagger   unknown (the server is down, or older than this wizard)');
 });
 
+test('status shows a failing model key, and says the turns are still saved', async () => {
+  const dir = tmpHome('spk-status-');
+  const said = [], write = process.stdout.write, cfg = process.env.CLAUDE_CONFIG_DIR;
+  const run = async (model) => {
+    said.length = 0;
+    process.env.CLAUDE_CONFIG_DIR = join(dir, 'cfg');
+    process.stdout.write = (s) => { said.push(String(s)); return true; };
+    try { await status(dir, async () => ({ n_events: 0, tagger: { model: 'typesafe/jev-router', via: 'openrouter' }, model })); } finally {
+      process.stdout.write = write;
+      if (cfg === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = cfg;
+    }
+    const text = said.join('').replace(/\x1b\[[0-9;]*m/g, '');
+    return text.split('\n').find((l) => l.includes(` ${'model'.padEnd(8)} `))?.trim();
+  };
+  assert.equal(await run({ stopped: null, error: null, untagged: 0, owed: 0 }), undefined);
+  assert.equal(await run(undefined), undefined); // a server older than this wizard
+  assert.equal(await run({ stopped: { kind: 'limit', provider: 'openrouter', since: '2026-11-09T14:03:21Z', reason: 'x' }, owed: 4 }),
+    '! model    OpenRouter key over its limit since 2026-11-09 14:03 UTC: turns are still saved and upload; memory extraction is paused. '
+    + 'Top up the key or change it in .memory/keys.env, then restart (spookling init --update).');
+  assert.match(await run({ stopped: { kind: 'key', provider: 'anthropic', since: '2026-11-09T14:03:21Z' } }), /^! model\s+Anthropic key refused \(invalid or disabled\) since/);
+  assert.match(await run({ stopped: null, error: 'ConnectionError: down', owed: 1 }), /^! model\s+not answering \(ConnectionError: down\): 1 item waiting/);
+});
+
 test('init offers to install claude when it is not on the PATH, and says so when it stays missing', () => {
   const src = fileURLToPath(new URL('../src/wizard.js', import.meta.url));
   const code = `const { claudeCli } = await import(${JSON.stringify(new URL(`file://${src}`).href)});
