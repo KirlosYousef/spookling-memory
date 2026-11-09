@@ -86,7 +86,8 @@ def test_hooks_log_the_transcript_and_recall_for_the_prompt(open_store, tmp_path
     write_transcript(path, TRANSCRIPT)
     assert hooks.turns(path) == [
         {"role": "user", "content": "I drive a Toyota Corolla, nothing fancy."},
-        {"role": "assistant", "content": "Anything else?"},  # the final prose: the text after the last tool call
+        {"role": "assistant", "content": "Noted."},  # each reply is its own entry: the text before a tool call is kept too
+        {"role": "assistant", "content": "Anything else?"},
         {"role": "user", "content": "From now on, always answer in metric units."}]  # our own recalled block stripped
     base = {"session_id": "abc", "transcript_path": str(path), "cwd": str(tmp_path)}
     prompt = {**base, "hook_event_name": "UserPromptSubmit", "prompt": "What car do I drive?"}
@@ -96,9 +97,10 @@ def test_hooks_log_the_transcript_and_recall_for_the_prompt(open_store, tmp_path
     stop = {**base, "hook_event_name": "Stop", "stop_hook_active": False}
     r = c.post("/v1/hook/stop", json=stop)
     assert r.json() == {} and hooks.PULSE not in r.headers
-    assert [(e.session_id, e.role) for e in store.mem.log.events] == [("abc#0", "user"), ("abc#0", "assistant"), ("abc#0", "user")]
+    assert [(e.session_id, e.role) for e in store.mem.log.events] == [("abc#e0-4", "user"), ("abc#e0-4", "assistant"),
+                                                                  ("abc#e0-4", "assistant"), ("abc#e0-4", "user")]
     c.post("/v1/hook/stop", json=stop)
-    assert len(store.mem.log.events) == 3
+    assert len(store.mem.log.events) == 4
 
     r = c.post("/v1/hook/user-prompt-submit", json=prompt)
     out = r.json()["hookSpecificOutput"]
@@ -113,7 +115,7 @@ def test_hooks_log_the_transcript_and_recall_for_the_prompt(open_store, tmp_path
     pre = {**base, "hook_event_name": "PreCompact", "trigger": "auto", "custom_instructions": ""}
     r = c.post("/v1/hook/pre-compact", json=pre)
     assert r.json() == {}
-    assert [e.session_id for e in store.mem.log.events][3:] == ["abc#3", "abc#3"]
+    assert [e.session_id for e in store.mem.log.events][4:] == ["abc#e4-6", "abc#e4-6"]
     assert {k.kind for k in store.mem.staging} == {"rule", "decision"}
     assert json.loads(r.headers[hooks.PULSE]) == {"kept": 2, "rules": 1, "lines": 2}
 
@@ -279,11 +281,12 @@ DEV = [  # a prompt with a paste, tool calls, narration, a task notification and
 ]
 
 
-def test_turns_keep_the_users_words_and_the_assistants_final_prose(tmp_path):
+def test_turns_keep_the_users_words_and_every_assistant_reply(tmp_path):
     path = tmp_path / "dev.jsonl"
     write_transcript(path, DEV)
     assert hooks.turns(path) == [
         {"role": "user", "content": "Why is the deploy failing? Here is the log:\n\nsee this"},
+        {"role": "assistant", "content": "Let me read the workflow."},  # narration before a tool call is a reply too
         {"role": "assistant", "content": "The deploy needs a new Haiku spend.\n\n"
                                          "I moved the job to the dev runner, key [secret]."},
         {"role": "user", "content": ""},  # a task notification holds its place, empty
@@ -296,7 +299,7 @@ def test_clean_drops_code_logs_json_and_caps():
     assert hooks.clean("$ uv run pytest\n>>> 1 + 1\n@@ -1,2 +1,2 @@\nINFO:     started\nreal words") == "real words"
     assert hooks.clean("Sep 24 │ Layla │ cancelled\ne26bd2f7787b3e769676d1ad8c1c11eb1da6153954ae73\nwhy?") == "why?"
     assert hooks.clean("[a link](http://x) stays") == "[a link](http://x) stays"
-    long = hooks.clean("word " * 2000)
+    long = hooks.clean("word " * 5000)
     assert len(long) <= hooks.TURN_CAP + 2 and long.endswith("word …")
 
 
@@ -306,14 +309,19 @@ def test_empty_turns_hold_their_place_and_old_parts_still_line_up(open_store, tm
     path = tmp_path / "dev.jsonl"
     write_transcript(path, DEV)
     c.post("/v1/hook/stop", json={**STOP, "session_id": "dev", "transcript_path": str(path)})
-    assert [e.session_id for e in store.mem.log.events] == ["dev#0-5"] * 4  # 5 places, the empty one not logged
+    assert [e.session_id for e in store.mem.log.events] == ["dev#e0-6"] * 5  # 6 places, the empty one not logged
     write_transcript(path, DEV + [
         {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Shipped."}]}}])
     c.post("/v1/hook/stop", json={**STOP, "session_id": "dev", "transcript_path": str(path)})
-    assert [(e.session_id, e.text) for e in store.mem.log.events][4:] == [("dev#5", "Shipped.")]
-    # a session logged before this change: "old#0" holds every place, the notification's too
-    store.ingest("old", [{"role": "user", "content": "x"}] * 5, tail=True)
+    assert [(e.session_id, e.text) for e in store.mem.log.events][5:] == [("dev#e6-7", "Shipped.")]
+    # a session logged before this change counted merged turns ("old#0" = 5 places, the notification's too), and a later reply
+    # replaced the narration before it: only what comes after the last logged text is new
+    store.ingest("old", [{"role": "user", "content": "Why is the deploy failing? Here is the log:\n\nsee this"},
+                         {"role": "assistant", "content": "The deploy needs a new Haiku spend.\n\n"
+                                                          "I moved the job to the dev runner, key [secret]."},
+                         {"role": "user", "content": ""}, {"role": "assistant", "content": "The agent is done."},
+                         {"role": "user", "content": "Great, ship it to dev."}], tail=True)
     write_transcript(path, DEV + [
         {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Shipped."}]}}])
     c.post("/v1/hook/stop", json={**STOP, "session_id": "old", "transcript_path": str(path)})
-    assert [(e.session_id, e.text) for e in store.mem.log.events if e.session_id.startswith("old#")][5:] == [("old#5", "Shipped.")]
+    assert [(e.session_id, e.text) for e in store.mem.log.events if e.session_id.startswith("old#")][4:] == [("old#e6-7", "Shipped.")]

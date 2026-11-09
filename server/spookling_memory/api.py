@@ -84,9 +84,10 @@ def create_app(store: Store) -> FastAPI:
 
     @app.post("/v1/backfill")
     def backfill(b: BackfillIn) -> dict:
-        """Log the turns of one transcript file that the LOG does not hold yet; a repeat adds nothing."""
+        """Log the turns of one transcript file that the LOG does not hold yet, replies an earlier version dropped included;
+        a repeat adds nothing."""
         agent = "codex" if b.harness == "codex" else "claude-code"
-        out = {"logged": hooks.log_transcript(store, agent, b.session_id, b.transcript_path, patient=True)}
+        out = {"logged": hooks.log_transcript(store, agent, b.session_id, b.transcript_path, patient=True, recover=True)}
         note = store.model_note()
         return out | {"note": note} if note else out
 
