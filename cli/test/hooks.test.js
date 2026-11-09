@@ -232,3 +232,43 @@ test('a server folder inside WSL, seen from Windows, runs through wsl.exe, never
   const r = spawnSync('bash', ['-c', mcpEntry(dir, URL).args[5].replace('exec uv run --project', 'printf %s')], { encoding: 'utf8' });
   if (!r.error) assert.equal(r.stdout, "/home/jane o'neil/spookling-memory/serverspookling-memorymcp");
 });
+
+// ---- share permissions and the /spookling-share command
+import { addPermissions, removePermissions, hasPermissions, SHARE_TOOLS, shareCommand, isOurShareCommand, commandsPath } from '../src/hooks.js';
+
+test('addPermissions adds exactly the four share tools, once, and keeps every other rule and key', () => {
+  assert.deepEqual(SHARE_TOOLS, ['memory_share', 'memory_share_status', 'team_sessions', 'team_session'].map((t) => `mcp__spookling-memory__${t}`));
+  assert.ok(!SHARE_TOOLS.some((t) => /delete|autoshare/.test(t)));
+  const s = { model: 'opus', permissions: { allow: ['Bash(ls:*)'], deny: ['Read(./.env)'], defaultMode: 'plan' } };
+  const a = addPermissions(s);
+  assert.deepEqual(a.permissions.allow, ['Bash(ls:*)', ...SHARE_TOOLS]);
+  assert.deepEqual(a.permissions.deny, ['Read(./.env)']);
+  assert.equal(a.permissions.defaultMode, 'plan');
+  assert.equal(a.model, 'opus');
+  assert.deepEqual(addPermissions(a), a, 'idempotent');
+  assert.deepEqual(s.permissions.allow, ['Bash(ls:*)'], 'the input is not changed');
+  assert.deepEqual(addPermissions({}).permissions.allow, SHARE_TOOLS);
+  assert.deepEqual(addPermissions({ permissions: { allow: [SHARE_TOOLS[0]] } }).permissions.allow, SHARE_TOOLS, 'no duplicate');
+  assert.ok(hasPermissions(a) && !hasPermissions(s) && !hasPermissions({}));
+});
+
+test('removePermissions drops only our four entries and tidies only what it emptied', () => {
+  const s = { permissions: { allow: ['Bash(ls:*)', ...SHARE_TOOLS, 'mcp__spookling-memory__memory_delete'], deny: ['x'] } };
+  assert.deepEqual(removePermissions(s).permissions, { allow: ['Bash(ls:*)', 'mcp__spookling-memory__memory_delete'], deny: ['x'] });
+  assert.deepEqual(removePermissions(addPermissions({})), {}, 'nothing of ours left behind');
+  assert.deepEqual(removePermissions({ permissions: { allow: [...SHARE_TOOLS], deny: ['x'] } }), { permissions: { deny: ['x'] } });
+  const plain = { permissions: { allow: ['Bash(ls:*)'] }, hooks: {} };
+  assert.deepEqual(removePermissions(plain), plain);
+  assert.throws(() => addPermissions({ permissions: { allow: 'x' } }), /not a list/);
+  assert.throws(() => removePermissions({ permissions: [] }), /not an object/);
+});
+
+test('the /spookling-share command allows only spookling share and is recognised as ours', () => {
+  const t = shareCommand();
+  assert.match(t, /^---\n[\s\S]*allowed-tools: Bash\(spookling share:\*\)\n---/);
+  assert.match(t, /spookling share --yes/);
+  assert.match(t, /--org "\$ARGUMENTS"/);
+  assert.ok(isOurShareCommand(t) && !isOurShareCommand('# mine') && !isOurShareCommand(undefined));
+  assert.equal(commandsPath('/p', 'project'), path.join('/p', '.claude', 'commands', 'spookling-share.md'));
+  assert.equal(commandsPath('/p', 'user', { CLAUDE_CONFIG_DIR: '/c' }), path.join('/c', 'commands', 'spookling-share.md'));
+});

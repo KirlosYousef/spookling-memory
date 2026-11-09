@@ -277,3 +277,10 @@ def test_delete_needs_exactly_one_target(team):
     assert "error" in run(M.memory_delete(None, False, ctx))
     assert "error" in run(M.memory_delete("sid1", True, ctx))
     assert ctx.asked == [] and deleted(team) == []
+
+
+def test_instructions_send_a_blocked_share_to_the_cli():
+    text = M.server.instructions
+    assert "memory_retrieve" in text
+    assert "spookling share" in text and "/spookling-share" in text
+    assert "do not retry" in text and "do not change any settings" in text

@@ -9,9 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, fits, paint, press, setFeed, setRaw, sleep, write as out } from './term.js';
 import { play } from './cutscene.js';
 import { flyOnce } from './ghost.js';
+import { ALLOW_SHARE_QUESTION, setShareDeclined, shareDeclined } from './allow-share.js';
 import { stage } from './stage.js';
 import {
-  HOOK_FILES, MCP_NAME, addHooks, addMcp, claudeDesktopConfigPath, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
+  HOOK_FILES, MCP_NAME, addHooks, addMcp, addPermissions, claudeDesktopConfigPath, commandsPath, hasPermissions, isOurShareCommand, removePermissions, shareCommand, SHARE_TOOLS, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
   wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath, STATUS_FILE, addStatusLine, removeStatusLine, isOurStatus,
   addCodexMcp, codexConfigPath, codexEntry, codexMcpEntry, codexMcpToml, installVersions, mcpCommand, ourHookCommands, removeCodexMcp,
 } from './hooks.js';
@@ -594,7 +595,7 @@ export function staleWiring(project = process.cwd(), home = homedir()) {
 }
 
 // `init --update`: no cutscene, no prompts, works without a TTY. Returns the exit code.
-export async function initUpdate({ project = process.cwd(), home = homedir(), probe = stats, ps, stop, alive, pause, find = detectInstall, withStatus = true } = {}) {
+export async function initUpdate({ project = process.cwd(), home = homedir(), probe = stats, ps, stop, alive, pause, find = detectInstall, withStatus = true, allowShare } = {}) {
   out(`${paint(C.GHOST, `Updating Spookling Memory to ${VERSION}`, true)}  ${paint(C.GREY, project)}\n`);
   const { targets, elsewhere, live } = await find({ project, home, probe });
   if (elsewhere.length) info(`Other projects with a project-scope install: ${elsewhere.join(', ')}. Run spookling update in each.`);
@@ -605,7 +606,7 @@ export async function initUpdate({ project = process.cwd(), home = homedir(), pr
     return 1;
   }
   const run = createRun(home);
-  const shared = { home, ps, stop, alive, pause, step4Done: false, knownProjects: elsewhere };
+  const shared = { home, ps, stop, alive, pause, step4Done: false, knownProjects: elsewhere, allowShare };
   let code = 0;
   for (const t of targets) {
     out(`\n   ${paint(C.GHOST, `${t.harness === 'claude' ? 'Claude Code' : 'Codex'}, ${t.scope} scope`)}${t.scope === 'project' ? paint(C.GREY, `  ${t.project}`) : ''}\n`);
@@ -629,10 +630,10 @@ export async function initUpdate({ project = process.cwd(), home = homedir(), pr
   return code;
 }
 
-export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false, ghost = true } = {}) {
+export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false, ghost = true, allowShare } = {}) {
   const label = dry ? DEMO_LABEL : '';
   await play({ anim: anim && !fast, keep: fits(anim), label });
-  const ctx = { ...newCtx(project, scope), ghost };
+  const ctx = { ...newCtx(project, scope), ghost, allowShare };
   const demo = dry ? demoInput(fast) : null;
   const st = stage({ anim, label, hold: fast ? 0 : 1200 });
   Object.assign(ctx, { dry, say: st.say, beat: demo?.beat ?? ctx.beat });
@@ -843,7 +844,43 @@ async function stepWire(ctx) {
       preview: `${mcpJson(desktopEntry)}\n  merged into Claude's desktop config; other keys stay`,
       same: `${rel(ctx, desktopPath)} already has the MCP entry`,
     });
+    await stepAllowShare(ctx, sp);
+    await shareCommandFile(ctx);
   }
+}
+
+// Let Claude call the four share tools without Claude Code blocking them. Each share is still confirmed by Spookling.
+// --allow-share / --no-allow-share decide without asking. With no flag: init asks (a terminal only); update asks only
+// at a terminal and only if the answer was never "no" before. Anything else leaves the settings alone.
+async function stepAllowShare(ctx, sp) {
+  const flag = ctx.auto ? ctx.auto.allowShare : ctx.allowShare;
+  let have = false;
+  try { have = !ctx.dry && hasPermissions(readJson(sp)); } catch { /* mergeFile reports an unreadable file */ }
+  if (have) return ok(`${rel(ctx, sp)} already lets Claude use the share tools`);
+  let want = flag;
+  if (want === undefined) {
+    const tty = ctx.dry || (process.stdin.isTTY && process.stdout.isTTY);
+    if (!tty) return info('Claude is not allowed to share sessions yet: run init with --allow-share to allow it.');
+    if (ctx.auto && shareDeclined(homeOf(ctx))) return;
+    // update has no prompts of its own, but this one is a consent, so it is asked
+    want = await confirm(`   ${ALLOW_SHARE_QUESTION}`, true);
+    if (!ctx.dry && !want) setShareDeclined(true, homeOf(ctx));
+  }
+  if (!want) return info('Claude may not share sessions on its own. Use spookling share, or run init with --allow-share.');
+  await mergeFile(ctx, sp, (s) => addPermissions(s), {
+    what: 'permissions.allow: the Spookling share tools',
+    preview: `"permissions": { "allow": ${JSON.stringify(SHARE_TOOLS, null, 2).replace(/\n/g, '\n    ')} }\n  merged in; your other rules stay. Spookling still asks you to confirm each share.`,
+    same: `${rel(ctx, sp)} already lets Claude use the share tools`,
+  });
+}
+
+// /spookling-share: the file is ours or it is not written
+async function shareCommandFile(ctx) {
+  const cp = commandsPath(ctx.project, ctx.scope), text = shareCommand();
+  const have = readText(cp);
+  if (have === text) return ok(`${rel(ctx, cp)} is up to date`);
+  if (have && !isOurShareCommand(have)) return info(`${rel(ctx, cp)} is yours; left it as it is.`);
+  await write(ctx, cp, text, { what: '/spookling-share command', redo: () => text });
 }
 
 // Ask the server for its stats.
@@ -1088,9 +1125,9 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
   const ctx = newCtx(project, scope);
   const sp = harness === 'codex' ? codexHooksPath(project, scope) : settingsPath(project, scope);
   out(`${paint(C.GHOST, 'Removing Spookling Memory wiring', true)}  ${paint(C.GREY, scope === 'user' ? `${project} (user scope)` : project)}\n`);
-  await mergeFile(ctx, sp, harness === 'codex' ? removeHooks : (s) => removeStatusLine(removeHooks(s)), {
+  await mergeFile(ctx, sp, harness === 'codex' ? removeHooks : (s) => removePermissions(removeStatusLine(removeHooks(s))), {
     what: 'removed the Spookling hooks',
-    preview: `drop only the Spookling hooks${harness === 'codex' ? '' : ' and the ghost (your own status line comes back)'}; everything else stays`,
+    preview: `drop only the Spookling hooks${harness === 'codex' ? '' : ', the share tools in permissions.allow and the ghost (your own status line comes back)'}; everything else stays`,
     same: `no Spookling hooks in ${rel(ctx, sp)}`,
   });
   if (harness === 'codex') {
@@ -1117,6 +1154,8 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
     if (r && r.status !== 0) ctx.problems.push(`run claude mcp remove ${MCP_NAME} --scope user yourself`);
   } else ok(`no ${MCP_NAME} entry in ${rel(ctx, mcpPath(project, 'user'))}`);
   if (harness !== 'codex') {
+    const cp = commandsPath(project, scope);
+    if (isOurShareCommand(readText(cp))) { rmSync(cp, { force: true }); ok(`removed ${rel(ctx, cp)}`); }
     const desktopPath = claudeDesktopConfigPath();
     await mergeFile(ctx, desktopPath, removeMcp, {
       what: `removed MCP server ${MCP_NAME} from the Claude desktop app`,

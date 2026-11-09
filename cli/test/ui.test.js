@@ -66,7 +66,8 @@ test('demo walks every step, writes nothing, and shows the tagline once', () => 
   for (let n = 1; n <= 7; n++) assert.match(o, new RegExp(`step ${n} of 7`));
   for (const k of [1, 2, 3, 4, 5, 6, 7]) assert.ok(o.includes(`spookling: ${SAY[k]}`), `line ${k}`);
   assert.equal(o.split(TAGLINE).length - 1, 1, 'the tagline once');
-  assert.equal(o.match(/demo: not written/g)?.length, 5); // keys.env, .gitignore, settings.json, .mcp.json, desktop config
+  assert.equal(o.match(/demo: not written/g)?.length, 7); // keys.env, .gitignore, settings.json, .mcp.json, desktop config, share permissions, /spookling-share
+  assert.match(o, /Let Claude share sessions to your team when you ask\? Spookling still asks you to confirm each share\./);
   for (const [i, t] of TAGGERS.entries()) assert.ok(o.includes(`${i + 1}  ${t.label}`), t.label);
   assert.match(o, /How should the tagger run\? \[1\]/);
   assert.match(o, /OpenRouter API key for Jev: •+/);
