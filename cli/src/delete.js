@@ -28,6 +28,12 @@ async function markDeleted(home, env, sids) {
   }, { scope: accountScope(home, env) }).catch(() => { /* the server already refuses these with 410; the mark is a second lock */ });
 }
 
+// a session this machine has uploaded from, queued, or linked
+function knownSession(home, env, sid) {
+  const st = readState(home, accountScope(home, env));
+  return typeof st.cursors[sid] === 'number' || st.queue.some((q) => q.sid === sid) || sid in st.links;
+}
+
 export async function deleteSession({ sessionId, env = process.env, home = homedir(), cloud: injected } = {}) {
   if (!sessionId) return { error: 'A session id is required.' };
   const { cloud, error } = client(env, home, injected);
@@ -40,7 +46,7 @@ export async function deleteSession({ sessionId, env = process.env, home = homed
     if (e instanceof CloudError && e.status === 404) alreadyGone = true; // gone already: the goal is met
     else return { error: explain(e, env, home) };
   }
-  await markDeleted(home, env, [sessionId]);
+  if (!alreadyGone || knownSession(home, env, sessionId)) await markDeleted(home, env, [sessionId]); // a typo must not leave a mark
   return { ok: true, action: 'deleted', sessionId, deleted: alreadyGone ? 0 : 1, alreadyGone, notFound: alreadyGone };
 }
 

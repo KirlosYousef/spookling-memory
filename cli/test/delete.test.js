@@ -271,3 +271,15 @@ test('delete all: 10,000 sessions fit in the default round cap (100 per call)', 
   assert.equal(out.deleted, 10000);
   assert.equal(out.incomplete, false);
 });
+
+test('delete one: a 404 for an unknown id (typo) leaves state untouched; a known local id is still marked', async () => {
+  const h = home();
+  await seed(h, (st) => { st.cursors.known = 2; });
+  const nf = { deleteSession: async () => { throw err(404); } };
+  await deleteSession({ sessionId: 'typo', home: h, cloud: nf });
+  assert.equal(readState(h, accountScope(h)).skipped.typo, undefined);
+  await deleteSession({ sessionId: 'known', home: h, cloud: nf });
+  const st = readState(h, accountScope(h));
+  assert.equal(st.skipped.known.reason, 'session_deleted');
+  assert.equal(st.cursors.known, undefined);
+});
