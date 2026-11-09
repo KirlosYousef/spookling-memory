@@ -254,6 +254,31 @@ def counts(ctx: str) -> dict:
             "chars": len(ctx), "cap": CAP}
 
 
+def log_transcript(store, agent: str, sid: str, transcript, last: str = "", patient: bool = False) -> int:
+    """Log the turns of a transcript file the LOG does not hold yet (Store.ingest counts places, so a repeat adds nothing);
+    returns how many were new. The raw turns reach log.jsonl before any model is asked."""
+    path = local_path(str(transcript or ""))
+    if not (path.suffix == ".jsonl" and path.is_file()):
+        return 0
+    conversation = codex_turns(path) if agent == "codex" else turns(path)
+    if agent != "codex":
+        try:
+            fork = fork_of(path, sid)
+            if fork:
+                save_fork(store.folder, sid, fork)
+        except Exception as e:  # a fork note is never worth a failed hook
+            LOG.warning("fork detection failed for %s: %r", sid, e)
+    last = clean(last)
+    if conversation and last:  # the file can lag the final reply at Stop
+        if conversation[-1]["role"] != "assistant":
+            conversation.append({"role": "assistant", "content": last})
+        else:
+            conversation[-1]["content"] = last
+    if not conversation:
+        return 0
+    return store.ingest(sid, conversation, agent=agent, tail=True, patient=patient)  # Stop is after the reply: it may wait
+
+
 def handle(store, event: str, p: dict) -> tuple[dict, dict]:
     """What the hook prints, and its pulse. Stop and PreCompact log new turns; PreCompact then keeps the session's rules."""
     agent = "codex" if p.get("harness") == "codex" else "claude-code"
@@ -265,24 +290,8 @@ def handle(store, event: str, p: dict) -> tuple[dict, dict]:
             return {}, {}
         ctx = cap(ctx)
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}}, counts(ctx)
-    path = local_path(str(p.get("transcript_path") or ""))
-    if path.suffix == ".jsonl" and path.is_file():
-        conversation = codex_turns(path) if agent == "codex" else turns(path)
-        if agent != "codex":
-            try:
-                fork = fork_of(path, sid)
-                if fork:
-                    save_fork(store.folder, sid, fork)
-            except Exception as e:  # a fork note is never worth a failed hook
-                LOG.warning("fork detection failed for %s: %r", sid, e)
-        last = clean(str(p.get("last_assistant_message") or ""))
-        if conversation and last and event == "stop":  # the file can lag the final reply at Stop
-            if conversation[-1]["role"] != "assistant":
-                conversation.append({"role": "assistant", "content": last})
-            else:
-                conversation[-1]["content"] = last
-        if conversation:  # Stop is after the reply: it may wait for a rebuild
-            store.ingest(sid, conversation, agent=agent, tail=True, patient=event == "stop")
+    log_transcript(store, agent, sid, p.get("transcript_path"), str(p.get("last_assistant_message") or "") if event == "stop" else "",
+                   patient=event == "stop")
     if event == "pre-compact":
         c = store.compact(sid)
         return {}, {"kept": c["kept"], "rules": counts(c["block"])["rules"], "lines": len(re.findall(r"^- ", c["block"], re.M))}

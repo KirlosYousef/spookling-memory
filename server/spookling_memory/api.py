@@ -36,6 +36,12 @@ class SessionIn(BaseModel):
     tail: bool = False  # turns is the whole conversation so far
 
 
+class BackfillIn(BaseModel):
+    session_id: str
+    transcript_path: str
+    harness: Literal["claude", "codex"] = "claude"
+
+
 class QuestionIn(BaseModel):
     question: str
     ts: str | None = None
@@ -50,7 +56,7 @@ class NoteIn(BaseModel):
 
 
 def create_app(store: Store) -> FastAPI:
-    app = FastAPI(title="Spookling Memory", version="0.2.0")
+    app = FastAPI(title="Spookling Memory", version="0.2.1")
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[HOST, "localhost"])
 
     @app.middleware("http")
@@ -72,7 +78,17 @@ def create_app(store: Store) -> FastAPI:
 
     @app.post("/v1/ingest")
     def ingest(s: SessionIn) -> dict:
-        return {"logged": store.ingest(s.id, [t.model_dump() for t in s.turns], s.ts, s.agent, s.tail)}
+        out = {"logged": store.ingest(s.id, [t.model_dump() for t in s.turns], s.ts, s.agent, s.tail)}
+        note = store.model_note()  # the turns are saved either way; say when the model could not read them yet
+        return out | {"note": note} if note else out
+
+    @app.post("/v1/backfill")
+    def backfill(b: BackfillIn) -> dict:
+        """Log the turns of one transcript file that the LOG does not hold yet; a repeat adds nothing."""
+        agent = "codex" if b.harness == "codex" else "claude-code"
+        out = {"logged": hooks.log_transcript(store, agent, b.session_id, b.transcript_path, patient=True)}
+        note = store.model_note()
+        return out | {"note": note} if note else out
 
     @app.post("/v1/retrieve")
     def retrieve(q: QuestionIn) -> dict:
@@ -126,7 +142,11 @@ def create_app(store: Store) -> FastAPI:
         if event == "stop":  # reply at once: the tagging runs after the response
             tasks.add_task(quietly, store, event, payload)
             return {}
-        body, pulse = await run_in_threadpool(hooks.handle, store, event, payload)
+        try:
+            body, pulse = await run_in_threadpool(hooks.handle, store, event, payload)
+        except Exception as e:  # noqa: BLE001  # a hook never fails Claude Code: no recall this time
+            hooks.LOG.warning("hook %s: answered with nothing (%s: %s)", event, type(e).__name__, e)
+            body, pulse = {}, {}
         return JSONResponse(body, headers={hooks.PULSE: json.dumps(pulse, separators=(",", ":"))} if pulse else None)
 
     return app

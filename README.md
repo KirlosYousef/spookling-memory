@@ -264,6 +264,7 @@ npx spookling init                 # this project
 npx spookling init --scope user    # every project you open in Claude Code
 npx spookling demo                 # the whole install, answered for you; writes nothing
 npx spookling status               # is the server up, what is wired, which tagger
+npx spookling backfill [--since <date>] [--all]   # log turns missing from .memory/ back from your Claude Code transcripts; safe to repeat
 npx spookling uninstall            # remove the hooks and the MCP entry; keep .memory/
 npx spookling update [--check] [--version x [--force]]   # install the newest version and re-wire what you already set up
 npx spookling restore [<timestamp>] [--yes]   # list the config backups, or put one run's files back
