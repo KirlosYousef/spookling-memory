@@ -279,7 +279,6 @@ def test_delete_needs_exactly_one_target(team):
     assert ctx.asked == [] and deleted(team) == []
 
 
-<<<<<<< HEAD
 def _pending_team(monkeypatch):
     calls = []
 
@@ -312,11 +311,9 @@ def test_declining_a_pending_share_queues_nothing(monkeypatch, answer):
 def test_session_id_defaults_to_empty_for_the_current_session():
     import inspect
     assert inspect.signature(M.memory_share).parameters["session_id"].default == ""
-||||||| 9e83d5e
-=======
+
 def test_instructions_send_a_blocked_share_to_the_cli():
     text = M.server.instructions
     assert "memory_retrieve" in text
     assert "spookling share" in text and "/spookling-share" in text
     assert "do not retry" in text and "do not change any settings" in text
->>>>>>> feat/share-allow
