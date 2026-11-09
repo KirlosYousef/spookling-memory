@@ -20,7 +20,7 @@ npx spookling tokens revoke <id>   # revoke one (a unique prefix of 6+ character
 npx spookling tokens revoke --all  # revoke every token, this device included
 npx spookling refresh [--org <id or name>]   # pull the org feeds into ~/.spookling/team-feed.json
 npx spookling sessions [project] [--limit N | --all]   # your uploaded sessions, newest 20 by default: private or shared, and the auto-share rules
-npx spookling share <session id> [--org <id or name>]     # share a session with an org
+npx spookling share [<session id> | --last] [--org <id or name>] [--yes]     # share a session with an org; no id: the current session, else this project's newest; asks first unless --yes
 npx spookling unshare <session id> [--org <id or name>]   # stop sharing it (all orgs without --org)
 npx spookling autoshare <project> on|off [--org <id or name>] [--backfill]   # share every new session of a project
 npx spookling delete <session id> [--yes]   # delete one uploaded session from the cloud; .memory/ is not touched
@@ -96,6 +96,8 @@ Windows sessions then log into the WSL project's `.memory/`; the server reads th
 - `--limit N` and `--all` (sessions): 20 newest by default, then `Showing 20 of 43. spookling sessions --all for all.` Titles are cut at 80 characters. `--backfill` (autoshare) also shares sessions already uploaded.
 - `--scope project` (default) or `--scope user`, for `init` and `uninstall`. See the table below.
 - `--no-ghost` (init) skips the question about the ghost in the Claude Code status line, and leaves the status line alone.
+- `--allow-share` and `--no-allow-share` (init) add or leave out the four share tools in `permissions.allow` without asking. Without either, init asks at a terminal. Use only one of them.
+- `--yes` (share, delete) skips the confirmation. Without a terminal, share and delete refuse unless it is given.
 - `--no-anim` skips the animation: the wordmark prints as a still and the ghost's lines print as plain text.
 - `--fast` (demo only) drops the pauses. Without it the demo takes about a minute; any key cuts the current pause short.
 - `--frames N` (demo only) prints N frames from across the intro, one after another, and stops. Useful for checking the drawing without a live terminal.
@@ -216,11 +218,16 @@ Optional, and never part of `init`. The full picture is in the [main README](htt
   - Masking: turns are masked first (`cli/src/mask.js`: JWTs, PEM private-key blocks, `scheme://user:pass@`, Slack `xox?-` tokens, Stripe `sk_live_`/`rk_live_`/test keys, plus the API-key and `NAME_TOKEN=value` patterns the server applies) and cut to 16,000 characters (a cut ends with "…"). `log.jsonl` is never rewritten.
   - Network down: the turns are queued in `~/.spookling/upload-state.json`. That file is kept per account and server (the saved user id plus the API origin): after you switch servers or log in as someone else, the cursors, queue, skips and share jobs of the other account are parked, not applied, and an unscoped file from an older version is kept under `legacy` while the current account starts fresh. If the server answers `400 seq_gap` (the saved position is ahead of what it holds), the client asks it how many turns it has, resets the cursor to that and resends once. `upload.log` records the reason, for example `upload queued: BAD_REQUEST seq_gap`, never the token or any turn text.
   - 429: waits once and retries.
+  - 5xx and other failures (network down included): queued, and retried at the next Stop or login. `upload.log` names the status and code, for example `500 INTERNAL_ERROR`. `refresh` does not retry uploads.
   - 409 `seq_conflict`: retried on the next Stop, then skipped; `status` names the session.
   - Final refusals, which never block the other sessions: 403 `org_owned` (shared with an org you left), 400 `turn_limit` and 400 `session_limit` (that one also stops creating new sessions in the same push while existing sessions keep growing). They are recorded in `upload-state.json` and `status` lists them.
   - 401: stops the push, keeps your login, and makes `status` print `login expired, run spookling login` until the next login or successful upload.
   - Limits: `project` is cut to 100 characters and `title` to 120, the API's limits.
 - **Share.** `share`, `unshare` and `autoshare` change who can see your own sessions; the org owns what is shared to it. Unsharing cannot un-tell someone who already read it. The MCP tools `memory_share`, `memory_autoshare` and `memory_share_status` call the same code.
+  - No id: `share` takes the session in `SPOOKLING_SESSION_ID` or `CLAUDE_SESSION_ID`, else the newest session in the local log for this project, else your newest upload. It prints the web link after a successful share.
+  - A session not on the server yet is uploaded now from its local log. If that fails, the share is queued in `upload-state.json` and applied after the session's next save. `unshare` cancels it; `memory_share_status` reports `share pending`.
+  - `init` writes the `/spookling-share` command to `.claude/commands/` (or the user config folder with `--scope user`). It runs `spookling share <session> --yes`, so typing it is the confirmation.
+  - Allow rule: `init` and `login` offer to add `mcp__spookling-memory__memory_share`, `memory_share_status`, `team_sessions` and `team_session` to `permissions.allow`. A "no" from `login` or `update` is kept in `~/.spookling/share-allow.json`. `uninstall` removes the rules Spookling added (a rule you had before stays).
 - **Forks.** The server (`hooks.py`, `fork_of`) spots a forked Claude Code transcript: its leading lines carry another `sessionId` (the parent's) than the file's own.
   - Record: `{parent, relation, branched_at, copied}` in `forks.json` beside `log.jsonl` (which keeps the whole conversation, as before).
   - Upload: the uploader reads that file. A new fork sends only the turns after the first `copied`, numbered from 0, and its PUT carries `parentSessionId`, `branchedAtTurn` and `relation`; the title comes from its first new user message.

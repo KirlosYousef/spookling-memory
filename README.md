@@ -427,7 +427,7 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 ```bash
 spookling orgs                          # your orgs, as id and name
 spookling sessions [project] [--limit N | --all]   # newest 20 uploaded sessions: private, or shared with which org; plus auto-share rules
-spookling share <session id> [--org <id or name>]
+spookling share [<session id> | --last] [--org <id or name>] [--yes]   # no id: the current session, else this project's newest
 spookling unshare <session id> [--org <id or name>]   # all orgs without --org
 spookling autoshare <project> on|off [--org <id or name>] [--backfill]
 spookling delete <session id> [--yes]   # delete one uploaded session from the cloud
@@ -435,6 +435,21 @@ spookling delete --all [--yes]          # delete all of yours, in batches
 ```
 
 `--org` can be left out: `share` and `autoshare on` then use your default org (saved at login), or your only org. `unshare`, `autoshare off` and `refresh` without `--org` cover every org. `autoshare on` shares every new session of that project; `--backfill` also shares the ones already uploaded. `off` removes the rule; sessions already shared stay shared. Sharing shows the cleaned turns to every active member of the org, and unsharing hides them again but cannot un-tell someone who already read them. The org owns what is shared to it.
+
+**Four ways to share a session:**
+
+- **Ask Claude.** Say "share this session". Claude calls `memory_share`, and Spookling shows its own confirmation dialog naming the session and the org. Nothing is shared without your yes.
+- **`/spookling-share [org]`.** A slash command that `init` writes to `.claude/commands/spookling-share.md` (or your Claude config folder with `--scope user`). Typing it is your confirmation, so it shares the current session without a dialog.
+- **`spookling share [id] [--org X] [--last] [--yes]`.** With no id it takes the current session (the one a terminal inside Claude Code runs in, else the newest in this project, else your newest upload). It asks first unless `--yes`, and prints the session's web link when it can build one. `--last` is the same as leaving the id out.
+- **The Share button** in the web app.
+
+**The allow rule.** `init` asks, and so does `login` (once, and only where Spookling's hooks are wired and no rule is set yet): "Let Claude share sessions to your team when you ask? Spookling still asks you to confirm each share." A yes adds four tools to `permissions.allow` in `.claude/settings.json` (or your user settings with `--scope user`): `mcp__spookling-memory__memory_share`, `memory_share_status`, `team_sessions` and `team_session`. `memory_delete` and `memory_autoshare` are never added.
+
+- `init --allow-share` adds the rules without asking; `init --no-allow-share` leaves them out without asking. Without either flag, init asks at a terminal and otherwise skips the question and says how to allow it.
+- A "no" is remembered in `~/.spookling/share-allow.json`, so `login` and `spookling update` do not ask again. `init` always asks.
+- `uninstall` removes the rules Spookling added (a rule you had before stays) and the `/spookling-share` command, as it removes the hooks.
+
+**Pending shares.** Sharing a session that is not saved yet uploads it now from its local log. If that fails, the share is queued and applies after the session's next save. `unshare` cancels a queued share, and `memory_share_status` reports it as `share pending`.
 
 **Delete.** `spookling delete <session id>` removes one uploaded session from the cloud; `spookling delete --all` removes every session you uploaded. It deletes the cloud copy only: local memory (`.memory/`) is never touched. On a terminal it asks first (`--all` asks you to type `DELETE`); without a terminal it refuses unless you pass `--yes`. Sessions shared with an org belong to the org: they are kept and listed as skipped. A deleted session is marked in `~/.spookling/upload-state.json` and never uploads again, even if you keep working in it; sessions you start later upload as usual. Deleting a session that is already gone counts as done. The MCP tool `memory_delete(session_id | all=true)` does the same from chat, and always opens a yes/no dialog first (for one session and for all); a client that cannot show it gets the `spookling delete` command to run instead.
 
@@ -445,6 +460,11 @@ You can also ask in the chat: when you are logged in, the prompt hook tells Clau
 **Read.** Colleagues' agents read what you shared through two MCP tools, `team_sessions` (list and filter by query, person, project or org) and `team_session` (one session, in full). Each call refreshes every org feed on demand first, then reads the local cache (`~/.spookling/team-feed.json`); if the refresh fails it answers from the cache and says it may be stale. There is no background pull, and the hooks never put colleague text in your prompt: the model calls these tools, and what comes back is quoted data, wrapped so the agent does not follow instructions inside it. `spookling refresh [--org <id or name>]` pulls the feeds by hand. When an org has more than 500 shared sessions the feed says its id list is truncated, and refresh then keeps every cached session instead of purging the ones it did not list.
 
 **`status`.** `npx spookling status` has a `cloud` line: who you are logged in as (or `not logged in`), the last sync, and the pending turns. It reads local files only, so it never waits on the network. "Last sync" is the newest feed time from the last `refresh` or team-tool call, `never` if there has been none; it says nothing about uploads. "Pending" is the number of turns queued in `upload-state.json` that the server has not accepted yet, usually because you were offline; turns that Stop has not reached yet are not counted. A session skipped after a repeated `seq_conflict` is listed on its own `upload` line.
+
+**Troubleshooting.**
+
+- **"Claude was blocked from sharing."** Claude Code denied the tool call, or no confirmation dialog could be shown, and Claude is told not to retry. Run `/spookling-share` in the chat or `spookling share` in a terminal, or accept the allow rule above.
+- **Upload errors.** Each failed upload is logged to `~/.spookling/upload.log` with its HTTP status and error code, for example `upload queued: 500 INTERNAL_ERROR`. A 5xx is a problem on the Spookling server, not on your machine: the turns stay queued and go up at the next Stop or the next login. `spookling refresh` does not retry uploads.
 
 ---
 
