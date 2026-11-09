@@ -275,7 +275,7 @@ npx spookling logout               # forget the saved token
 npx spookling whoami               # who you are, the API and your default org
 npx spookling orgs                 # the orgs you belong to
 npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `--all` to revoke
-npx spookling refresh              # pull the org feeds into the local cache
+npx spookling refresh              # pull the org feeds into the local cache, and retry queued uploads and shares
 npx spookling sessions [project]   # your newest 20 uploaded sessions (--all, --limit N)
 npx spookling share <session id>   # share a session with an org (unshare to stop)
 npx spookling autoshare <project> on|off   # share every new session of a project
@@ -447,9 +447,9 @@ spookling delete --all [--yes]          # delete all of yours, in batches
 
 - `init --allow-share` adds the rules without asking; `init --no-allow-share` leaves them out without asking. Without either flag, init asks at a terminal and otherwise skips the question and says how to allow it.
 - A "no" is remembered in `~/.spookling/share-allow.json`, so `login` and `spookling update` do not ask again. `init` always asks.
-- `uninstall` removes the rules Spookling added (a rule you had before stays) and the `/spookling-share` command, as it removes the hooks.
+- `uninstall` removes only the rules Spookling itself added (it records them per settings file in `share-allow.json`; a rule you had before stays, even if it is one of the four) and the `/spookling-share` command, as it removes the hooks.
 
-**Pending shares.** Sharing a session that is not saved yet uploads it now from its local log. If that fails, the share is queued and applies after the session's next save. `unshare` cancels a queued share, and `memory_share_status` reports it as `share pending`.
+**Pending shares.** Sharing a session that is not saved yet uploads it now from its local log. If that fails, the share is queued and applies after the session's next save. `unshare` cancels a queued share, and `memory_share_status` reports it as `share pending`. A queued share is dropped after 7 days (noted in `~/.spookling/upload.log`). If the server refuses a queued share when it is applied (not a member, session or org gone, login rejected), the share is dropped and the next `spookling share`, `sessions`, `status` or `memory_share_status` says so once, for example `Share of 'Fix login' to Acme did not apply: 403 not a member`. A session id you type that is in no local log and not on the server is an error (`No session <id> found here or in the cloud`) and queues nothing. `spookling refresh` retries queued uploads and shares and prints the result.
 
 **Delete.** `spookling delete <session id>` removes one uploaded session from the cloud; `spookling delete --all` removes every session you uploaded. It deletes the cloud copy only: local memory (`.memory/`) is never touched. On a terminal it asks first (`--all` asks you to type `DELETE`); without a terminal it refuses unless you pass `--yes`. Sessions shared with an org belong to the org: they are kept and listed as skipped. A deleted session is marked in `~/.spookling/upload-state.json` and never uploads again, even if you keep working in it; sessions you start later upload as usual. Deleting a session that is already gone counts as done. The MCP tool `memory_delete(session_id | all=true)` does the same from chat, and always opens a yes/no dialog first (for one session and for all); a client that cannot show it gets the `spookling delete` command to run instead.
 
@@ -459,7 +459,7 @@ You can also ask in the chat: when you are logged in, the prompt hook tells Clau
 
 **Read.** Colleagues' agents read what you shared through two MCP tools, `team_sessions` (list and filter by query, person, project or org) and `team_session` (one session, in full). Each call refreshes every org feed on demand first, then reads the local cache (`~/.spookling/team-feed.json`); if the refresh fails it answers from the cache and says it may be stale. There is no background pull, and the hooks never put colleague text in your prompt: the model calls these tools, and what comes back is quoted data, wrapped so the agent does not follow instructions inside it. `spookling refresh [--org <id or name>]` pulls the feeds by hand. When an org has more than 500 shared sessions the feed says its id list is truncated, and refresh then keeps every cached session instead of purging the ones it did not list.
 
-**`status`.** `npx spookling status` has a `cloud` line: who you are logged in as (or `not logged in`), the last sync, and the pending turns. It reads local files only, so it never waits on the network. "Last sync" is the newest feed time from the last `refresh` or team-tool call, `never` if there has been none; it says nothing about uploads. "Pending" is the number of turns queued in `upload-state.json` that the server has not accepted yet, usually because you were offline; turns that Stop has not reached yet are not counted. A session skipped after a repeated `seq_conflict` is listed on its own `upload` line.
+**`status`.** `npx spookling status` has a `cloud` line: who you are logged in as (or `not logged in`), the last sync, the pending turns and the shares waiting for their session to upload (a refused share is shown there once). It reads local files only, so it never waits on the network. "Last sync" is the newest feed time from the last `refresh` or team-tool call, `never` if there has been none; it says nothing about uploads. "Pending" is the number of turns queued in `upload-state.json` that the server has not accepted yet, usually because you were offline; turns that Stop has not reached yet are not counted. A session skipped after a repeated `seq_conflict` is listed on its own `upload` line.
 
 **Troubleshooting.**
 
