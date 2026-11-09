@@ -46,8 +46,10 @@ export async function deleteSession({ sessionId, env = process.env, home = homed
     if (e instanceof CloudError && e.status === 404) alreadyGone = true; // gone already: the goal is met
     else return { error: explain(e, env, home) };
   }
-  if (!alreadyGone || knownSession(home, env, sessionId)) await markDeleted(home, env, [sessionId]); // a typo must not leave a mark
-  return { ok: true, action: 'deleted', sessionId, deleted: alreadyGone ? 0 : 1, alreadyGone, notFound: alreadyGone };
+  const known = knownSession(home, env, sessionId);
+  if (!alreadyGone || known) await markDeleted(home, env, [sessionId]); // a typo must not leave a mark
+  const marked = !alreadyGone || known;
+  return { ok: true, action: 'deleted', sessionId, deleted: alreadyGone ? 0 : 1, alreadyGone, notFound: alreadyGone, marked };
 }
 
 // local sessions that reached the cloud (they have an upload cursor). One that is only queued, offline, never did:
@@ -102,7 +104,7 @@ export const formatDelete = (out) => clean(((o) => {
   if (o.error) return o.error;
   const local = 'Local memory (.memory/) is untouched.';
   if (o.action === 'deleted') {
-    return `${o.alreadyGone ? `Session ${o.sessionId} was not found in the cloud (already deleted, or never uploaded).` : `Deleted session ${o.sessionId} from the cloud.`} It will not upload again. ${local}`;
+    return `${o.alreadyGone ? `Session ${o.sessionId} was not found in the cloud (already deleted, or never uploaded).` : `Deleted session ${o.sessionId} from the cloud.`}${o.marked === false ? '' : ' It will not upload again.'} ${local}`;
   }
   const lines = [`Deleted ${o.deleted} ${o.deleted === 1 ? 'session' : 'sessions'} from the cloud.`];
   if (o.skipped?.length) lines.push(`Kept ${o.skipped.length} shared with an org (the org owns them): ${o.skipped.map((s) => s.id).join(', ')}`);

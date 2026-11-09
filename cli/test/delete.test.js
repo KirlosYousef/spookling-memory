@@ -283,3 +283,23 @@ test('delete one: a 404 for an unknown id (typo) leaves state untouched; a known
   assert.equal(st.skipped.known.reason, 'session_deleted');
   assert.equal(st.cursors.known, undefined);
 });
+
+test('delete all: totals are summed from each call (100 + 26 = 126), the skipped org-owned one is not counted', async () => {
+  const h = home();
+  const seq = [{ deleted: 100, skipped: [], remaining: 27 }, { deleted: 26, skipped: [{ id: 'org1', reason: 'org_owned' }], remaining: 0 }];
+  const out = await deleteAllSessions({ home: h, cloud: { deleteAllSessions: async () => seq.shift() } });
+  assert.equal(out.deleted, 126);
+  assert.deepEqual(out.skipped, [{ id: 'org1', reason: 'org_owned' }]);
+  assert.equal(out.remaining, 0);
+  assert.match(formatDelete(out), /Deleted 126 sessions from the cloud\.\nKept 1 shared with an org \(the org owns them\): org1/);
+});
+
+test('delete one: the not-found message drops "will not upload again" when the id was not marked', async () => {
+  const h = home();
+  const nf = { deleteSession: async () => { throw err(404); } };
+  const typo = formatDelete(await deleteSession({ sessionId: 'typo', home: h, cloud: nf }));
+  assert.match(typo, /not found in the cloud/);
+  assert.doesNotMatch(typo, /will not upload again/);
+  await seed(h, (st) => { st.cursors.k = 1; });
+  assert.match(formatDelete(await deleteSession({ sessionId: 'k', home: h, cloud: nf })), /will not upload again/);
+});
