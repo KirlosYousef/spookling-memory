@@ -264,6 +264,7 @@ npx spookling init                 # this project
 npx spookling init --scope user    # every project you open in Claude Code
 npx spookling demo                 # the whole install, answered for you; writes nothing
 npx spookling status               # is the server up, what is wired, which tagger
+npx spookling backfill [--since <date>] [--all]   # log turns missing from .memory/ back from your Claude Code transcripts; safe to repeat
 npx spookling uninstall            # remove the hooks and the MCP entry; keep .memory/
 npx spookling update [--check] [--version x [--force]]   # install the newest version and re-wire what you already set up
 npx spookling restore [<timestamp>] [--yes]   # list the config backups, or put one run's files back
@@ -408,7 +409,7 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 **Upload.** Once you are logged in, each Stop hook uploads the finished session to the Spookling app, named after its git repo.
 
 - **Private:** only you can see it until you share it.
-- **What goes up:** the cleaned turns from `.memory/log.jsonl`, cut to 4,000 characters each, with secrets masked first. `log.jsonl` itself is not changed.
+- **What goes up:** the cleaned turns from `.memory/log.jsonl`, cut to 16,000 characters each (a cut ends with "…"), with secrets masked first. `log.jsonl` itself is not changed.
 - **What is masked:** API keys, AWS key IDs, GitHub tokens, `NAME_TOKEN=value` lines, JWTs, PEM private-key blocks, `scheme://user:pass@` URLs, Slack tokens, Stripe keys. This is pattern matching, so a secret in another shape still gets through.
 - **Network down:** the turns wait in `~/.spookling/upload-state.json` and go up on a later Stop. Upload progress is remembered per account and server, so switching either starts cleanly; if the server holds fewer turns than expected, the client asks it where it is and resends from there.
 - **Refused for good:** that session is skipped and the rest still upload. This covers one shared with an org you have since left (`org_owned`), one past the 10,000-turn limit, and one over the 10,000-session account limit (which also pauses creating new sessions for that push). `spookling status` names them.

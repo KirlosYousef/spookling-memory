@@ -7,6 +7,7 @@ import { frames } from './cutscene.js';
 import { init, initUpdate, status, uninstall } from './wizard.js';
 import { update } from './update.js';
 import { restore } from './restore.js';
+import { backfill } from './backfill.js';
 import { login, logout, orgs, tokens, whoami } from './account.js';
 import { VERSION, clean, originWarning } from './cloud.js';
 import { updateAvailable } from './registry.js';
@@ -20,6 +21,7 @@ const HELP = `Spookling Memory
   spookling update [--check] [--version x [--force]]   install the newest spookling and re-wire hooks and MCP entries (--check: exit 10 if one is available)
   spookling restore [<timestamp>] [--yes]   list the backups init, update and uninstall made, or restore one run (--yes without a terminal)
   spookling demo            the whole install as you would see it, answered for you; writes nothing
+  spookling backfill [--since <date>] [--all]   log turns the memory is missing from your Claude Code transcripts (idempotent; this project, or every project with --all)
   spookling status          is the server up, which harness is wired (project and user files)
   spookling uninstall       remove the hooks and MCP entry, keep .memory/
   spookling login           sign in, pick a default org, offer to upload past sessions (init does not do this)
@@ -150,7 +152,7 @@ function tokensCommand(args, { fns, home }) {
 
 async function route(args, deps) {
   const fns = {
-    init, refresh, login, logout, whoami, orgs, tokens, status, update, restore, initUpdate, uninstall,
+    init, refresh, login, logout, whoami, orgs, tokens, status, update, restore, initUpdate, uninstall, backfill,
     delete: { one: deleteSession, all: deleteAllSessions },
     share: { status: shareStatus, session: setSessionShare, project: setProjectAutoShare },
     ...Object.fromEntries(Object.entries(deps).filter(([, v]) => typeof v === 'function' || (v && typeof v === 'object' && ('status' in v || 'one' in v)))),
@@ -195,6 +197,14 @@ async function route(args, deps) {
     case 'whoami':
       if (!deps.whoami) await updateAvailable({ home, current: VERSION, env }).catch(() => null); // refreshes the daily cache, at most 2 s
       return fns.whoami({ home });
+    case 'backfill': {
+      const when = flag(args, 'since', 'takes a date, like 2026-11-01');
+      const since = when === undefined ? null : new Date(when);
+      if (since && Number.isNaN(since.getTime())) usage(`--since takes a date, like 2026-11-01, not ${when}`);
+      const project = existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) ? cwd : home;
+      const r = await fns.backfill({ project, home, env, since, all: args.includes('--all') });
+      return r.error ? 1 : 0;
+    }
     case 'status': return fns.status(existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) ? cwd : home);
     case 'uninstall': return fns.uninstall(folder, { scope, harness });
     case 'help': process.stdout.write(HELP); return 0;

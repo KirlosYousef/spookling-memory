@@ -39,14 +39,14 @@ def test_fast_on_100k(name):
     text = ADVERSARIAL[name]
     t = time.perf_counter()
     out = hooks.mask_secrets(text)
-    assert (time.perf_counter() - t) * 1000 < 250  # a quadratic blow-up takes seconds; this only has to survive a slow CI runner
+    assert (time.perf_counter() - t) * 1000 < 1000  # a quadratic blow-up takes seconds; this only has to survive a slow CI runner (the rescans cover 16k characters now)
     assert len(out) <= hooks.MASK_INPUT_MAX + 16
 
 
 def test_clean_masks_after_the_cap_and_is_fast():
     t = time.perf_counter()
     out = hooks.clean(("eyJ-" * 25_000) + " end")
-    assert (time.perf_counter() - t) * 1000 < 200
+    assert (time.perf_counter() - t) * 1000 < 1000
     assert len(out) <= hooks.TURN_CAP + 2
     key = "sk-" + "a" * 30
     out = hooks.clean(("word " * 790) + key + " tail words here " * 80)

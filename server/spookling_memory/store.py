@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
+import time
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -19,8 +21,20 @@ from .core.sleep import tx_of
 from .subscription import backend
 
 LOG, JUDGEMENTS, VECTORS, CACHE = "log.jsonl", "judgements.jsonl", "vectors.sqlite", "cache.sqlite"
+PENDING = "pending.json"  # {"tagged_upto": seq} while turns in the LOG still wait for the model; gone when none do
+RETRY = 60  # seconds before a model call that failed (not a latched key error) is tried again
+WARN = logging.getLogger("uvicorn.error")  # uvicorn's, so it lands in .memory/server.log
 WINDOWS = os.name == "nt"
-PART = re.compile(r"#(\d+)(?:-(\d+))?")  # a tail part: "#<from>" or "#<from>-<to>"
+PART = re.compile(r"#(e?)(\d+)(?:-(\d+))?")  # a tail part: "#<from>" or "#<from>-<to>"; "#e<from>-<to>" counts entries (see ingest)
+
+
+def covers(logged: str, text: str) -> bool:
+    """The logged text holds this entry: equal, part of a merged turn, or its capped start (an older, shorter cap ends " …")."""
+    return text == logged or text in logged or (logged.endswith(" …") and text.startswith(logged[:-2]))
+
+
+PROVIDER = {"openrouter": "OpenRouter", "anthropic": "Anthropic"}
+KIND = {"credit": "out of credit", "limit": "over its limit", "key": "refused (invalid or disabled)"}
 
 
 class Busy(RuntimeError):
@@ -48,7 +62,7 @@ def read_jsonl(path: Path) -> list[dict]:
     return out
 
 
-def load(mem, events: list[dict], decisions: list[dict]) -> None:
+def load(mem, events: list[dict], decisions: list[dict], tagged: int | None = None) -> None:
     """Replay the records into a fresh adapter, with the side state judging grows; settle() builds the views."""
     for e in events:
         ev = mem.log.append(e["agent"], e["session_id"], e["turn_index"], e["role"], e["ts"], e["text"])
@@ -57,7 +71,8 @@ def load(mem, events: list[dict], decisions: list[dict]) -> None:
     for d in decisions:
         mem.record(d)
         replay(mem, d)
-    mem.tag_cursor = mem.log.last_seq  # every stored turn was tagged before it was stored
+    # every stored turn was tagged before it was stored, except those a pending.json says the model never got to
+    mem.tag_cursor = mem.log.last_seq if tagged is None else min(tagged, mem.log.last_seq)
 
 
 def replay(mem, d: dict) -> None:
@@ -127,6 +142,7 @@ class Store:
             raise RuntimeError(f"{self.folder} is open in another process (one server per memory folder)") from None
         self.adapter, self.lock, self._post, self.mem = adapter, threading.RLock(), None, None
         self.wait, self.ready, self.failed = wait, threading.Event(), None
+        self._retry_at, self.model_error = 0.0, None  # when the model may be asked again; its last failure, for status
         vectors.CACHE = self.folder / VECTORS  # ponytail: process-wide, fine for one folder per server process
         models.CACHE_PATH = self.folder / CACHE  # likewise
         if background:
@@ -141,10 +157,11 @@ class Store:
             with self.lock:
                 events, decisions = read_jsonl(self.folder / LOG), read_jsonl(self.folder / JUDGEMENTS)
                 self.mem = SpooklingMemory(**self.adapter)
-                load(self.mem, events, decisions)
+                load(self.mem, events, decisions, self._tagged_upto())
                 self.written = (len(events), len(decisions))
-                self.mem.settle()
+                self._settle()  # judges what an earlier run left waiting, if the model answers now
                 self._flush()  # a full sleep may judge pending items: those judgements are records too
+                self._mark()
         except BaseException as e:
             if self.mem is not None:  # Windows cannot delete its open temp SQLite file
                 self.mem.close()
@@ -175,25 +192,125 @@ class Store:
         append(self.folder / JUDGEMENTS, dec)
         self.written = (len(self.mem.log.events), len(self.mem.log.decisions))
 
+    def _tagged_upto(self) -> int | None:
+        try:
+            return int(json.loads((self.folder / PENDING).read_text(encoding="utf-8"))["tagged_upto"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _mark(self) -> None:
+        """pending.json says how far the model got while turns wait; it is written before the turns are, removed when none wait."""
+        path = self.folder / PENDING
+        if self.mem.tag_cursor >= self.mem.log.last_seq:
+            path.unlink(missing_ok=True)
+            return
+        tmp = path.with_name(f"{PENDING}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"tagged_upto": self.mem.tag_cursor}) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+
+    def _model_ok(self) -> bool:
+        """False once a key error latched (until a restart), and for RETRY seconds after any other model failure."""
+        return not models.STOPPED and time.monotonic() >= self._retry_at
+
+    def _model_failed(self, e: BaseException) -> None:
+        self.model_error = f"{type(e).__name__}: {e}"[:300]
+        if not models.STOPPED:
+            self._retry_at = time.monotonic() + RETRY
+        WARN.warning("the model could not be called, the turns are kept and judged later (%s)", self.model_error)
+
+    def _settle(self) -> None:
+        """Views up to date. Model work that is owed is tried when the model may be asked; if it fails, or may not be asked,
+        the views are rebuilt from what is judged so far, so recall still answers (from the verbatim turns)."""
+        m = self.mem
+        if m.owed() and self._model_ok():
+            m.full_seq = -1  # full() judges what is owed, then rebuilds
+        elif m.owed():
+            if m.log.last_seq > m.full_seq:
+                m.rebuild()
+            return
+        try:
+            m.settle()
+            self.model_error = None
+        except (Exception, SystemExit) as e:  # SystemExit: models._key() with no key
+            self._model_failed(e)
+            m.rebuild()
+
+    def model_note(self) -> str | None:
+        """One line for a caller that saved turns while the model is not working, else None."""
+        info = models.stop_info()
+        if info:
+            return (f"{PROVIDER[info['provider']]} key {KIND[info['kind']]}: the turns are saved and will be judged once the key "
+                    f"works; memory extraction is paused until then.")
+        if self.mem is not None and self.mem.owed() and self.model_error:
+            return "the memory model is not answering: the turns are saved and will be judged later."
+        return None
+
     def records(self) -> tuple[list[dict], list[dict]]:
         return [asdict(e) for e in self.mem.log.events], list(self.mem.log.decisions)
 
-    def _logged(self, session_id: str) -> int:
-        """How many turns of the conversation the LOG is past, from its "<id>#<a>" and "<id>#<a>-<b>" parts."""
+    def _logged(self, session_id: str, entries: bool = False) -> int:
+        """How many turns of the conversation the LOG is past, from its "<id>#<a>" and "<id>#<a>-<b>" parts; with entries, how
+        many entries, from the "<id>#e<a>-<b>" parts only."""
         parts = Counter(e.session_id for e in self.mem.log.events
                         if e.session_id == session_id or e.session_id.startswith(session_id + "#"))
         upto = 0
         for part, n in parts.items():
             m = PART.fullmatch(part[len(session_id):])
-            upto = max(upto, int(m[2]) if m and m[2] else int(m[1]) + n if m else n)
+            if entries:
+                upto = max(upto, int(m[3]) if m and m[1] and m[3] else 0)
+            elif not (m and m[1]):
+                upto = max(upto, int(m[3]) if m and m[3] else int(m[2]) + n if m else n)
         return upto
 
+    def _texts(self, session_id: str, entries: bool) -> list[tuple[str, str]]:
+        """(role, text) of what the LOG holds of the conversation, in log order; of the entry parts, or of the older ones."""
+        out = []
+        for e in self.mem.log.events:
+            if e.session_id == session_id or e.session_id.startswith(session_id + "#"):
+                m = PART.fullmatch(e.session_id[len(session_id):])
+                if bool(m and m[1]) == entries:
+                    out.append((e.role, e.text))
+        return out
+
+    def _entries(self, session_id: str, turns: list[dict], recover: bool) -> list[int]:
+        """The places of `turns` (one entry per user turn and per assistant reply) to log now.
+
+        Old logs count merged turns (a later reply replaced an earlier one after a tool call), so their places do not line up
+        with entries. The first time a session is logged by entries, the logged texts are matched against the entries in order
+        (covers), and only the entries after the last one the LOG already holds are new. After that the places are entry
+        counts ("#e<from>-<to>" parts) and nothing is matched again. recover: also the entries no logged text covers."""
+        have = self._logged(session_id, True)
+        texts = self._texts(session_id, False) + self._texts(session_id, True)
+        if not have:  # not logged by entries yet: where the old log's last text sits in the entries
+            at = 0
+            for role, text in self._texts(session_id, False):
+                k = next((k for k in range(at, len(turns)) if turns[k]["role"] == role and covers(text, turns[k]["content"])), None)
+                if k is None:
+                    continue
+                while k + 1 < len(turns) and turns[k + 1]["role"] == role and covers(text, turns[k + 1]["content"]):
+                    k += 1  # a merged turn holds several replies
+                at = k + 1
+            have = at or min(self._logged(session_id), len(turns))  # nothing matched (another cleaning?): the old count is the best guess
+        new = list(range(have, len(turns)))
+        if recover:
+            new = [k for k in range(have) if turns[k]["content"].strip()
+                   and not any(r == turns[k]["role"] and covers(t, turns[k]["content"]) for r, t in texts)] + new
+        return [k for k in new if turns[k]["content"].strip()]
+
     def ingest(self, session_id: str, turns: list[dict], ts: str | None = None, agent: str = "user",
-               tail: bool = False, patient: bool = False) -> int:
-        """Returns how many turns were new. tail: turns is the whole conversation so far; patient: no wait limit."""
+               tail: bool = False, patient: bool = False, split: bool = False, recover: bool = False) -> int:
+        """Returns how many turns were new. tail: turns is the whole conversation so far; patient: no wait limit.
+        split: the turns are entries (hooks.turns: each assistant reply its own); a log made before that is continued by content."""
         with self._busy(None if patient else self.wait):
             m = self.mem
-            if tail:
+            if tail and split:
+                picked = self._entries(session_id, turns, recover)
+                if not picked:
+                    return 0
+                # "#e<first>-<all>": the entries are counted, so the next Stop starts after the last one however the old log counted
+                part = f"{session_id}#e{picked[0]}-{len(turns)}"
+                turns, session_id, ts = [turns[k] for k in picked], part, None
+            elif tail:
                 have = self._logged(session_id)
                 new = [t for t in turns[have:] if t["content"].strip()]
                 if not new:
@@ -204,18 +321,26 @@ class Store:
             tx_of(ts, 0, 0)  # a bad timestamp in the LOG would fail every later sleep
             if not R.admits(m.log.decisions, ts):
                 raise ValueError(f"session {session_id} at {ts} predates the reset at {R.latest(m.log.decisions)['at']}")
-            n = len(m.log.events)
-            m.ingest(Session(session_id, agent, ts, [Turn(t["role"], t["content"]) for t in turns]))
-            # only now, with the session tagged, is it written: a failed tagging call leaves the files as they were
-            self._flush()
-            return len(m.log.events) - n
+            n = m.append(Session(session_id, agent, ts, [Turn(t["role"], t["content"]) for t in turns]))
+            self._mark()  # before the turns, so a stop in between never calls them tagged
+            self._flush()  # the turns are durable now; what the model derives from them may fail and is redone later
+            if self._model_ok():
+                try:
+                    m.sleep()
+                    self.model_error = None
+                except (Exception, SystemExit) as e:
+                    self._model_failed(e)
+                self._flush()  # judgements made before a failure are records too
+            self._mark()
+            return n
 
     def retrieve(self, question: str, ts: str | None = None) -> dict:
         """After a reset, a question about now is answered from the after-reset view."""
         ts = ts or now()
         with self._busy(self.wait):
-            self.mem.settle()
+            self._settle()
             self._flush()
+            self._mark()
             r = R.latest(self.mem.log.decisions)
             if r and not R.asks_before(self.mem, question, ts, r):
                 return self._view(r).retrieve(question, "user", ts)
@@ -281,6 +406,8 @@ class Store:
             r = R.latest(self.mem.log.decisions)
             return self.mem.stats() | {"folder": str(self.folder), "before_reset": len(R.before_reset(self.mem)),
                                        "reset": {k: r[k] for k in ("id", "at", "note", "upto")} if r else None,
+                                       "model": {"stopped": models.stop_info(), "error": self.model_error,
+                                                 "untagged": self.mem.untagged(), "owed": self.mem.owed()},
                                        "tagger": {"model": self.mem.model, "via": backend(self.mem.model),
                                                   "decider": self.mem.decider and self.mem.decider.model}}
 

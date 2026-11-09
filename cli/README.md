@@ -7,6 +7,7 @@ npx spookling init                 # the intro, then the step-by-step install, f
 npx spookling init --scope user    # the same, wired for every project you open in Claude Code
 npx spookling demo                 # the whole install as you would see it, answered for you; writes nothing
 npx spookling status               # is the server up, what is wired (project and user files), which tagger, and a `cloud` line (see Team memory); exit 0 when all is well
+npx spookling backfill [--since <date>] [--all]   # log turns missing from .memory/ back from the Claude Code transcripts (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects); this project's, or every project's with --all; no duplicates, so it is safe to repeat; the uploader sends them with the next session stop
 npx spookling uninstall            # remove the hooks and the MCP entry (add --scope user for the user files), keep .memory/
 npx spookling update [--check] [--version x [--force]]   # install the newest version and re-wire hooks and MCP entries (--check: exit 10 if one is available)
 npx spookling restore [<timestamp>] [--yes]   # list the config backups init, update and uninstall made, or put one run's files back (--yes without a terminal)
@@ -210,7 +211,7 @@ After approval, three more steps, none of which can fail the login:
 Optional, and never part of `init`. The full picture is in the [main README](https://github.com/Spookling/spookling-memory#team-memory); the parts the CLI owns:
 
 - **Upload.** With a saved login, the Stop hook waits for the session's log to go quiet, then uploads its turns, private to you.
-  - Masking: turns are masked first (`cli/src/mask.js`: JWTs, PEM private-key blocks, `scheme://user:pass@`, Slack `xox?-` tokens, Stripe `sk_live_`/`rk_live_`/test keys, plus the API-key and `NAME_TOKEN=value` patterns the server applies) and cut to 4,000 characters. `log.jsonl` is never rewritten.
+  - Masking: turns are masked first (`cli/src/mask.js`: JWTs, PEM private-key blocks, `scheme://user:pass@`, Slack `xox?-` tokens, Stripe `sk_live_`/`rk_live_`/test keys, plus the API-key and `NAME_TOKEN=value` patterns the server applies) and cut to 16,000 characters (a cut ends with "…"). `log.jsonl` is never rewritten.
   - Network down: the turns are queued in `~/.spookling/upload-state.json`. That file is kept per account and server (the saved user id plus the API origin): after you switch servers or log in as someone else, the cursors, queue, skips and share jobs of the other account are parked, not applied, and an unscoped file from an older version is kept under `legacy` while the current account starts fresh. If the server answers `400 seq_gap` (the saved position is ahead of what it holds), the client asks it how many turns it has, resets the cursor to that and resends once. `upload.log` records the reason, for example `upload queued: BAD_REQUEST seq_gap`, never the token or any turn text.
   - 429: waits once and retries.
   - 409 `seq_conflict`: retried on the next Stop, then skipped; `status` names the session.
@@ -290,6 +291,10 @@ Before it writes, each file is read again and must still parse: invalid JSON, or
 
 - `spookling restore` lists the runs and their files.
 - `spookling restore <timestamp>` shows each file as `differs from the current file`, `same as now` or `missing now`, and asks `[y/N]` (no is the default; without a terminal it needs `--yes`). It then backs up the current versions as a new run and puts the files back with their original modes. It will not write through a symlink.
+
+## When the model key stops working
+
+Turns are written to `.memory/log.jsonl` before any model is asked, so a key that is over its limit, invalid or out of credit (OpenRouter's 403 `Key limit exceeded`, a 401, a 402, Anthropic's credit error) never loses a turn, and the uploader keeps working. The server stops calling the model, `status` shows a `model` line with the reason and the time, hooks answer without recall instead of failing, and the MCP save tool says the turns are saved. Turns not yet judged are listed in `.memory/pending.json` and judged on the next call that works, or when the server starts again. Top up the key or change it in `.memory/keys.env`, then restart with `spookling init --update`. `spookling backfill` puts back turns that earlier versions dropped while the key was failing.
 
 ## After an upgrade
 

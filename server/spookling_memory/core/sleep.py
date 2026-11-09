@@ -320,6 +320,12 @@ def full(mem) -> None:
         ruling, spent = mem.triage.resolve(e.text, e.ts[:10], d, hist(d["key"]), d["flags"])
         mem.spend(spent)
         mem.record(resolve_decision(mem, d, e, ruling))
+    rebuild(mem)
+
+
+def rebuild(mem) -> None:
+    """The views from the LOG and the judgements so far: pure code, no model call. full() ends here; so does a settle
+    while the model is unavailable (turns still waiting for a judgement are searchable, just not tagged)."""
     facts = fold(mem.log.decisions)
     facts.check()  # raises IntegrityError
     old, mem.facts = mem.facts, facts

@@ -93,7 +93,7 @@ and UserPromptSubmit adds the recalled block as `additionalContext`, cut at 10,0
 logged is the user's own words and the assistant's final prose (its text after the turn's last tool call), cleaned by
 `hooks.clean()`: no `<x-y>` wrapper blocks (system reminders, task notifications, pastes, our own blocks), no fenced
 code, no line that looks like JSON, a log, a stack trace, a shell or diff line or a terminal table, no line that is
-mostly not letters, API keys and `*_TOKEN=`-style values masked, at most 4,000 characters a turn. A turn that cleans
+mostly not letters, API keys and `*_TOKEN=`-style values masked, at most 16,000 characters a turn. A turn that cleans
 to nothing (a task notification) keeps its place but is not logged; its tail part is then `<id>#<from>-<to>`. In
 `.claude/settings.json` (exec form: no shell, so no path needs quoting; Claude Code v2.1.139 or later):
 
