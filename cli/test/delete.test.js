@@ -59,7 +59,7 @@ test('delete one: 404 counts as done; 403 org_owned is an error and marks nothin
   const gone = await deleteSession({ sessionId: 'a', home: h, cloud: { deleteSession: async () => { throw err(404); } } });
   assert.equal(gone.ok, true);
   assert.equal(gone.alreadyGone, true);
-  assert.match(formatDelete(gone), /already gone/);
+  assert.match(formatDelete(gone), /not found in the cloud \(already deleted, or never uploaded\)/);
   const owned = await deleteSession({ sessionId: 'b', home: h, cloud: { deleteSession: async () => { throw err(403, 'org_owned'); } } });
   assert.match(owned.error, /belongs to it/);
   assert.equal(readState(h, accountScope(h)).skipped.b, undefined);
@@ -78,7 +78,7 @@ test('delete all: loops while remaining, collects skipped, marks local sessions 
   assert.equal(out.deleted, 140);
   assert.deepEqual(out.skipped, [{ id: 'owned', reason: 'org_owned' }]);
   const st = readState(h, accountScope(h));
-  assert.deepEqual(Object.keys(st.skipped).sort(), ['a', 'b', 'q']);
+  assert.deepEqual(Object.keys(st.skipped).sort(), ['a', 'b']);
   assert.equal(st.cursors.owned, 1);
   assert.match(formatDelete(out), /Deleted 140 sessions.*Kept 1 shared with an org.*upload as usual.*untouched/s);
 });
@@ -105,7 +105,7 @@ test('delete all: an error mid-way reports what was deleted and marks nothing', 
   const h = home();
   await seed(h, (st) => { st.cursors.a = 1; });
   let n = 0;
-  const out = await deleteAllSessions({ home: h, cloud: { deleteAllSessions: async () => { if (n++) throw err(429); return { deleted: 10, skipped: [], remaining: 5 }; } } });
+  const out = await deleteAllSessions({ home: h, sleep: async () => {}, cloud: { deleteAllSessions: async () => { if (n++) throw err(429); return { deleted: 10, skipped: [], remaining: 5 }; } } });
   assert.match(out.error, /Rate limited.*10 deleted/);
   assert.equal(readState(h, accountScope(h)).skipped.a, undefined);
 });
@@ -231,4 +231,43 @@ test('delete all: deletedIds are marked per batch, even when a later batch fails
   const st2 = readState(h2, accountScope(h2));
   assert.deepEqual(Object.keys(st2.skipped).sort(), ['x0', 'x1']);
   assert.equal(st2.cursors.x, 1); // not in deletedIds, unfinished run: untouched
+});
+
+test('delete all: an offline-queued session that never uploaded is not marked and still uploads later', async () => {
+  const h = home();
+  await seed(h, (st) => { st.cursors.up = 1; st.queue.push({ sid: 'queued', session: { project: 'p', title: 't' }, turns: [{ seq: 0, role: 'user', text: 'hi', ts: '2026-01-01T00:00:00Z' }] }); });
+  await deleteAllSessions({ home: h, cloud: { deleteAllSessions: async () => ({ deleted: 1, deletedIds: ['up'], skipped: [], remaining: 0 }) } });
+  const st = readState(h, accountScope(h));
+  assert.equal(st.skipped.up.reason, 'session_deleted');
+  assert.equal(st.skipped.queued, undefined);
+  assert.equal(st.queue.length, 1);
+  const cloud = upCloud();
+  await pushFromLog({ logText: logOf('queued'), home: h, cloud, project: 'p', log: () => {} });
+  assert.deepEqual(cloud.puts, ['queued']);
+});
+
+test('delete all: 429 waits retryAfter (default 20s, max 60s), prints a waiting line, and continues', async () => {
+  const h = home();
+  const sleeps = [], lines = [], seq = [err(429), Object.assign(err(429), { retryAfter: 500 }), Object.assign(err(429), { retryAfter: 7 }), { deleted: 3, skipped: [], remaining: 0 }];
+  const out = await deleteAllSessions({ home: h, sleep: async (ms) => { sleeps.push(ms); }, log: (m) => lines.push(m),
+    cloud: { deleteAllSessions: async () => { const x = seq.shift(); if (x instanceof Error) throw x; return x; } } });
+  assert.deepEqual(sleeps, [20000, 60000, 7000]);
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /waiting 20s…/);
+  assert.equal(out.deleted, 3);
+});
+
+test('delete all: persistent 429 gives up with the rate-limit message; retryAfter is read from details', async () => {
+  const out = await deleteAllSessions({ home: home(), sleep: async () => {}, cloud: { deleteAllSessions: async () => { throw err(429); } } });
+  assert.match(out.error, /Rate limited/);
+  const fetchImpl = async () => ({ status: 429, ok: false, headers: { get: () => null }, text: async () => JSON.stringify({ success: false, error: { code: 'RATE', details: { retryAfter: 12 } } }) });
+  const cloud = createCloud({ env: { SPOOKLING_API_URL: 'http://127.0.0.1:1' }, fetchImpl, token: 'spk_t', home: tmpHome() });
+  await assert.rejects(cloud.deleteAllSessions(), (e) => e.retryAfter === 12);
+});
+
+test('delete all: 10,000 sessions fit in the default round cap (100 per call)', async () => {
+  let left = 10000;
+  const out = await deleteAllSessions({ home: home(), cloud: { deleteAllSessions: async () => { left -= 100; return { deleted: 100, skipped: [], remaining: left }; } } });
+  assert.equal(out.deleted, 10000);
+  assert.equal(out.incomplete, false);
 });

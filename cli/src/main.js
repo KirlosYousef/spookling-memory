@@ -137,7 +137,7 @@ async function deleteCommand(args, { fns, home }, { ask, tty }) {
       return 0;
     }
   }
-  const out = all ? await fns.delete.all({ home }) : await fns.delete.one({ sessionId: rest[0], home });
+  const out = all ? await fns.delete.all({ home, log: (m) => process.stdout.write(`${m}\n`) }) : await fns.delete.one({ sessionId: rest[0], home });
   process.stdout.write(`${formatDelete(out)}\n`);
   return out.error ? 1 : 0;
 }

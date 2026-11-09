@@ -127,7 +127,7 @@ async function request(base, path, { method, token, body, fetchImpl, timeoutMs }
       status: res.status,
       code: err.code || null,
       reason: err.details?.reason || null,
-      retryAfter: retry,
+      retryAfter: retry ?? retryAfter(err.details?.retryAfter),
     });
   }
   if (!json || json.success !== true || !('data' in json)) {
