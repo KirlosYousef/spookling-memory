@@ -131,12 +131,14 @@ argument-hint: [org name or id]
 allowed-tools: Bash(spookling share:*)
 ---
 ${SHARE_MARK}
-Share the current session with the user's Spookling team. The user typed this command, so that is their confirmation.
+Share the current Claude Code session with the user's Spookling team. The user typed this command, so that is their confirmation.
 
-Run this one Bash command and show its output as it is:
+The current session id is \`${'$'}{CLAUDE_SESSION_ID}\` (Claude Code fills it in). Run this one Bash command and show its output as it is:
 
-- No argument given: \`spookling share --yes\`
-- Argument given ($ARGUMENTS): \`spookling share --yes --org "$ARGUMENTS"\`
+- Org argument empty: \`spookling share ${'$'}{CLAUDE_SESSION_ID} --yes\`
+- Org argument given: \`spookling share ${'$'}{CLAUDE_SESSION_ID} --yes --org "$ARGUMENTS"\`
+
+Org argument: $ARGUMENTS
 
 If it fails, tell the user what it printed and stop. Do not try another way to share, and do not change any settings.
 `;

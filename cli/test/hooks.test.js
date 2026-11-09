@@ -266,8 +266,8 @@ test('removePermissions drops only our four entries and tidies only what it empt
 test('the /spookling-share command allows only spookling share and is recognised as ours', () => {
   const t = shareCommand();
   assert.match(t, /^---\n[\s\S]*allowed-tools: Bash\(spookling share:\*\)\n---/);
-  assert.match(t, /spookling share --yes/);
-  assert.match(t, /--org "\$ARGUMENTS"/);
+  assert.match(t, /spookling share \$\{CLAUDE_SESSION_ID\} --yes\n|spookling share \$\{CLAUDE_SESSION_ID\} --yes`/);
+  assert.match(t, /spookling share \$\{CLAUDE_SESSION_ID\} --yes --org "\$ARGUMENTS"/);
   assert.ok(isOurShareCommand(t) && !isOurShareCommand('# mine') && !isOurShareCommand(undefined));
   assert.equal(commandsPath('/p', 'project'), path.join('/p', '.claude', 'commands', 'spookling-share.md'));
   assert.equal(commandsPath('/p', 'user', { CLAUDE_CONFIG_DIR: '/c' }), path.join('/c', 'commands', 'spookling-share.md'));

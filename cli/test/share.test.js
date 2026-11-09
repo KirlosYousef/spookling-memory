@@ -205,11 +205,14 @@ test('no id and no log: the newest uploaded session of the project', async () =>
 
 test('webUrl: the default API maps to the web app, another API needs SPOOKLING_APP_URL', () => {
   const h = tmpHome('spk-url-');
-  assert.equal(webUrl('s1', { env: { SPOOKLING_APP_URL: 'https://app.example.com/' }, home: h }), 'https://app.example.com/memory/s1');
+  writeCredentials({ token: 'spk_t', user: { id: 'u1' }, apiUrl: 'http://x' }, { home: h });
+  assert.equal(webUrl('s1', { env: { SPOOKLING_APP_URL: 'https://app.example.com/' }, home: h }), 'https://app.example.com/memory/u1%3As1'); // the web route takes ownerId:clientId
   writeCredentials({ token: 'spk_t', user: { id: 'u1' }, apiUrl: 'https://api.other.example' }, { home: h });
   assert.equal(webUrl('s1', { env: {}, home: h }), ''); // an unknown API has no known web app
   writeCredentials({ token: 'spk_t', user: { id: 'u1' }, apiUrl: 'https://api.spookling.com' }, { home: h });
-  assert.equal(webUrl('s1', { env: {}, home: h }), 'https://app.spookling.com/memory/s1');
+  assert.equal(webUrl('s1', { env: {}, home: h }), 'https://app.spookling.com/memory/u1%3As1');
+  writeCredentials({ token: 'spk_t', apiUrl: 'https://api.spookling.com' }, { home: h });
+  assert.equal(webUrl('s1', { env: {}, home: h }), ''); // no saved user id: no link rather than a broken one
 });
 
 // ---- the CLI: `spookling share` with no id ----
@@ -240,7 +243,7 @@ test('share with no id shows what will be shared and asks; N shares nothing', as
   const yes = await runCli(['share', '--last'], { home: h, cwd: dir, env: { SPOOKLING_APP_URL: 'https://app.example.com' }, tty: true, ask: async () => 'y', share });
   assert.equal(yes.code, 0);
   assert.match(yes.out, /shared/);
-  assert.match(yes.out, /https:\/\/app\.example\.com\/memory\/cur1/);
+  assert.match(yes.out, /https:\/\/app\.example\.com\/memory\/u1%3Acur1/);
   assert.deepEqual(cloud.calls, [['share', 'cur1', 'o1']]);
 });
 
@@ -260,4 +263,42 @@ test('share --yes skips the question; without a terminal and without --yes it re
 test('help lists share, unshare, autoshare and update', async () => {
   const { out } = await runCli(['help'], {});
   for (const w of ['spookling share', 'spookling unshare', 'spookling autoshare', 'spookling update']) assert.ok(out.includes(w), w);
+});
+
+test('a half-sent upload (session created, turns refused) queues the share instead of sharing it', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1');
+  const cloud = storingCloud();
+  cloud.postTurns = async () => { throw Object.assign(new Error('x'), { name: 'CloudError', status: 503 }); };
+  const out = await setSessionShare({ sessionId: 'new1', share: true, projectDir: dir, home: h, cloud });
+  assert.equal(out.pending, true);
+  assert.deepEqual(cloud.calls, []); // the empty session is on the server, but nothing is shared yet
+  assert.equal(readState(h, accountScope(h)).shares.length, 1);
+});
+
+test('an explicit id is found in the log of a parent folder (Claude cd-ed into a subfolder)', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1');
+  const sub = join(dir, 'src', 'deep');
+  mkdirSync(sub, { recursive: true });
+  const cloud = storingCloud();
+  const out = await setSessionShare({ sessionId: 'new1', share: true, projectDir: sub, home: h, env: {}, cloud });
+  assert.equal(out.pending, undefined);
+  assert.deepEqual(cloud.calls, [['share', 'new1', 'o1']]);
+  assert.equal(readState(h, accountScope(h)).cursors.new1, 1);
+});
+
+test('spookling share <id> --yes with an id that is not uploaded uploads it, or queues the share', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'new1');
+  const cloud = storingCloud();
+  const share = { status: shareStatus, session: (a) => setSessionShare({ ...a, cloud }) };
+  const up = await runCli(['share', 'new1', '--yes'], { home: h, cwd: dir, env: {}, tty: false, share });
+  assert.equal(up.code, 0);
+  assert.deepEqual(cloud.calls, [['share', 'new1', 'o1']]);
+  const none = storingCloud();
+  const queued = await runCli(['share', 'later1', '--yes', '--org', 'Org test'], { home: h, cwd: dir, env: {}, tty: false, share: { status: shareStatus, session: (a) => setSessionShare({ ...a, cloud: none }) } });
+  assert.equal(queued.code, 0);
+  assert.match(queued.out, /Will be shared with Org test after this session's next save/);
+  assert.deepEqual(readState(h, accountScope(h)).shares.map((j) => j.sid), ['later1']);
 });

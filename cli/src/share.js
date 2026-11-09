@@ -63,14 +63,18 @@ export function pickOrg(orgs, wanted, defaultId = null) {
 
 const WEB_BASE = 'https://app.spookling.com';
 
-/** Where a session is read in the web app, or '' when this API has no known web app. SPOOKLING_APP_URL overrides. */
+/**
+ * Where a session is read in the web app, or '' when this API has no known web app or the user id is not saved. The web route takes the
+ * session's read id, `<ownerId>:<clientId>` (the API answers a bare client id with 400). SPOOKLING_APP_URL overrides the app's origin.
+ */
 export function webUrl(sessionId, { env = process.env, home = homedir() } = {}) {
   let base = typeof env.SPOOKLING_APP_URL === 'string' ? env.SPOOKLING_APP_URL.trim().replace(/\/+$/, '') : '';
   if (!/^https:\/\/[^/\s]+$/.test(base)) {
     base = '';
     try { if (apiBase(env, { home }) === 'https://api.spookling.com') base = WEB_BASE; } catch { /* no known web app */ }
   }
-  return base && sessionId ? `${base}/memory/${encodeURIComponent(sessionId)}` : '';
+  const owner = readCredentials({ env, home }).user?.id;
+  return base && sessionId && owner ? `${base}/memory/${encodeURIComponent(`${owner}:${sessionId}`)}` : '';
 }
 
 function gitRoot(dir) {
@@ -92,15 +96,27 @@ function projectOf(dir, home) {
   return dir === home ? '' : basename(dir);
 }
 
-const logPaths = (projectDir, home) => [...new Set([projectDir && join(projectDir, '.memory', 'log.jsonl'), join(home, '.memory', 'log.jsonl')].filter(Boolean))];
+// Where the Stop hook may have written the session: .memory/log.jsonl of the folder Claude Code started in (the hook's cwd, or
+// CLAUDE_PROJECT_DIR), else ~/.memory. This command's own folder may have moved down since (Claude cd'd into a subfolder), so its parents count too.
+function logPaths(projectDir, home, env = process.env) {
+  const dirs = [];
+  for (let d = projectDir, i = 0; d && i < 24; i += 1) {
+    dirs.push(d);
+    const up = dirname(d);
+    if (up === d || d === home) break;
+    d = up;
+  }
+  if (typeof env.CLAUDE_PROJECT_DIR === 'string' && env.CLAUDE_PROJECT_DIR) dirs.push(env.CLAUDE_PROJECT_DIR);
+  return [...new Set([...dirs.map((d) => join(d, '.memory', 'log.jsonl')), join(home, '.memory', 'log.jsonl')])];
+}
 
 function readLog(path) {
   try { return readFileSync(path, 'utf8'); } catch { return ''; }
 }
 
 /** What the local log knows about a session: { title, turns, logPath } or null. Local files only. */
-export function localSession(sessionId, { projectDir = process.cwd(), home = homedir() } = {}) {
-  for (const logPath of logPaths(projectDir, home)) {
+export function localSession(sessionId, { projectDir = process.cwd(), home = homedir(), env = process.env } = {}) {
+  for (const logPath of logPaths(projectDir, home, env)) {
     const text = readLog(logPath);
     if (!text.includes(sessionId)) continue;
     const hit = projectLog(text, { forks: {} }).find((x) => x.sid === sessionId);
@@ -110,8 +126,8 @@ export function localSession(sessionId, { projectDir = process.cwd(), home = hom
 }
 
 // The newest session in a local log, by its last turn's timestamp.
-function newestLocal(projectDir, home) {
-  for (const path of logPaths(projectDir, home)) {
+function newestLocal(projectDir, home, env = process.env) {
+  for (const path of logPaths(projectDir, home, env)) {
     const last = new Map();
     for (const line of readLog(path).split('\n')) {
       if (!line.trim()) continue;
@@ -136,7 +152,7 @@ export async function currentSession({ env = process.env, home = homedir(), proj
     const v = typeof env[key] === 'string' ? env[key].trim() : '';
     if (v && !v.includes('#')) return { sessionId: v, source: 'environment' };
   }
-  const local = newestLocal(projectDir, home);
+  const local = newestLocal(projectDir, home, env);
   if (local) return { sessionId: local, source: 'local log' };
   const { cloud, error } = client(env, home, injected);
   if (error) return { error };
@@ -266,17 +282,25 @@ export async function setSessionShare({ sessionId, share, org, projectDir = proc
     if (share) {
       let mine = await onServer();
       let project = mine?.project || '';
+      let uploadFailed = false;
       if (!mine) {
-        const local = localSession(sessionId, { projectDir, home });
-        project = projectOf(projectDir, home);
+        const local = localSession(sessionId, { projectDir, home, env });
+        project = projectOf(projectDir, home) || (local ? projectOf(dirname(dirname(local.logPath)), home) : ''); // as the Stop hook names it
         if (local && local.turns > 0) {
-          await pushFromLog({ logPath: local.logPath, home, env, cloud, project, sessionId, log: () => {} });
-          mine = await onServer().catch(() => undefined);
+          const r = await pushFromLog({ logPath: local.logPath, home, env, cloud, project, sessionId, log: () => {} });
+          // a refused upload for this session (offline, 5xx, 401, rate limit) leaves it half sent at best: queue the share, do not apply it
+          uploadFailed = !!r?.failed?.some((f) => f.sid === sessionId);
+          mine = uploadFailed ? undefined : await onServer().catch(() => undefined);
         }
       }
       if (!mine) {
         const o = targets[0];
         await queueShare(home, env, { sid: sessionId, project, orgId: o.id });
+        // the Stop hook may have finished its upload (and its share flush) while this ran: look once more, so the job is not left waiting
+        if (!uploadFailed && (mine = await onServer().catch(() => undefined))) await dropQueued(home, env, sessionId, o.id);
+      }
+      if (!mine) {
+        const o = targets[0];
         return {
           ok: true, pending: true, action: 'share pending', sessionId, orgs: [o.name], visibility: 'share pending',
           message: `Will be shared with ${o.name} after this session's next save.`,
