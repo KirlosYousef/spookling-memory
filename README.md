@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · `spookling` 0.2.0 · October 2026*
+*Algorithm v2.1 · `spookling` 0.2.1 · November 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -245,7 +245,9 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost is the status line.
 
-Spookling Memory is out as `spookling` 0.2.0, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
+Spookling Memory is out as `spookling` 0.2.1, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
+
+New in 0.2.1: turns are saved before any model is called, so a tagger key that runs out or stops working no longer loses a chat ([When the tagger key stops working](#when-the-tagger-key-stops-working)); every assistant reply in a turn is logged, not only the last one; turns can be up to 16,000 characters; `spookling backfill` puts back turns missing from `.memory/`; and `spookling delete` (or `memory_delete` from chat) removes uploaded sessions from the cloud.
 
 **Upgrading.** On 0.1.x, run `npx spookling init` once. From 0.2 on, run `spookling update`. Why: [Updating](#updating).
 
@@ -264,6 +266,7 @@ npx spookling init                 # this project
 npx spookling init --scope user    # every project you open in Claude Code
 npx spookling demo                 # the whole install, answered for you; writes nothing
 npx spookling status               # is the server up, what is wired, which tagger
+npx spookling backfill [--since <date>] [--all]   # log turns missing from .memory/ back from your Claude Code transcripts; safe to repeat
 npx spookling uninstall            # remove the hooks and the MCP entry; keep .memory/
 npx spookling update [--check] [--version x [--force]]   # install the newest version and re-wire what you already set up
 npx spookling restore [<timestamp>] [--yes]   # list the config backups, or put one run's files back
@@ -276,6 +279,7 @@ npx spookling refresh              # pull the org feeds into the local cache
 npx spookling sessions [project]   # your newest 20 uploaded sessions (--all, --limit N)
 npx spookling share <session id>   # share a session with an org (unshare to stop)
 npx spookling autoshare <project> on|off   # share every new session of a project
+npx spookling delete <session id>   # delete an uploaded session from the cloud (--all for every one)
 ```
 
 The team commands are explained under [Team memory](#team-memory), `update` under [Updating](#updating) and `restore` under [Backups and restore](#backups-and-restore); `cli/README.md` has the flags.
@@ -313,6 +317,10 @@ Every file is shown before it is written, and `n` skips it. Without a terminal (
 
 To switch, stop the server (`uninstall` offers to) and run `init` again. `status` shows which tagger is running.
 
+### When the tagger key stops working
+
+Every turn is written to `.memory/log.jsonl` before the tagger is asked, so a key that is over its limit, invalid or out of credit never loses a chat, and uploads keep working. The server stops calling the model, `status` shows a `model` line with the reason and the time, and the hooks answer without recall instead of failing. Turns not yet tagged wait in `.memory/pending.json` and are tagged on the next call that works, or when the server starts again. Top up or change the key in `.memory/keys.env`, then run `spookling init --update`. Turns an older version dropped while the key was failing come back with `spookling backfill`.
+
 ### What it writes
 
 | Where | What |
@@ -338,7 +346,7 @@ Most people never need these.
 ```bash
 spookling update                 # install the newest version and re-wire everything you already set up
 spookling update --check         # only report: exit 0 when current, 10 when an update is available
-spookling update --version 0.2.1 [--force]   # a specific version (0.2.1 is just an example); going backwards needs --force
+spookling update --version 0.2.0 --force   # a specific version (0.2.0 is just an example); going backwards needs --force
 ```
 
 From 0.2 on, `spookling update` is the way to upgrade. 0.1.x has no `update` command, so on 0.1.x run `npx spookling init` once first. Either way, each version installs into its own folder under `~/.spookling-memory/` and `init` leaves the old one in place, so your hooks and MCP entries keep using the old folder (it still works) until you do.
@@ -366,7 +374,7 @@ spookling restore 20261104-183005 --yes   # without a terminal
 
 ### Upgrading by hand
 
-Until `init` or `update` re-points them, a new version's changes (new MCP tools, title and project fixes) do not reach your hooks and MCP entries. In the meantime `status` exits 1 and shows a line like `! upgrade  hooks still use 0.1.3. Run spookling update to finish upgrading to 0.2.0.` (the versions are an example). On 0.1.x, finish with `npx spookling init`, as in [Updating](#updating).
+Until `init` or `update` re-points them, a new version's changes (new MCP tools, title and project fixes) do not reach your hooks and MCP entries. In the meantime `status` exits 1 and shows a line like `! upgrade  hooks still use 0.1.3. Run spookling update to finish upgrading to 0.2.1.` (the versions are an example). On 0.1.x, finish with `npx spookling init`, as in [Updating](#updating).
 
 ### Where it runs
 
@@ -407,7 +415,7 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 **Upload.** Once you are logged in, each Stop hook uploads the finished session to the Spookling app, named after its git repo.
 
 - **Private:** only you can see it until you share it.
-- **What goes up:** the cleaned turns from `.memory/log.jsonl`, cut to 4,000 characters each, with secrets masked first. `log.jsonl` itself is not changed.
+- **What goes up:** the cleaned turns from `.memory/log.jsonl`, cut to 16,000 characters each (a cut ends with "…"), with secrets masked first. `log.jsonl` itself is not changed.
 - **What is masked:** API keys, AWS key IDs, GitHub tokens, `NAME_TOKEN=value` lines, JWTs, PEM private-key blocks, `scheme://user:pass@` URLs, Slack tokens, Stripe keys. This is pattern matching, so a secret in another shape still gets through.
 - **Network down:** the turns wait in `~/.spookling/upload-state.json` and go up on a later Stop. Upload progress is remembered per account and server, so switching either starts cleanly; if the server holds fewer turns than expected, the client asks it where it is and resends from there.
 - **Refused for good:** that session is skipped and the rest still upload. This covers one shared with an org you have since left (`org_owned`), one past the 10,000-turn limit, and one over the 10,000-session account limit (which also pauses creating new sessions for that push). `spookling status` names them.
@@ -422,9 +430,13 @@ spookling sessions [project] [--limit N | --all]   # newest 20 uploaded sessions
 spookling share <session id> [--org <id or name>]
 spookling unshare <session id> [--org <id or name>]   # all orgs without --org
 spookling autoshare <project> on|off [--org <id or name>] [--backfill]
+spookling delete <session id> [--yes]   # delete one uploaded session from the cloud
+spookling delete --all [--yes]          # delete all of yours, in batches
 ```
 
 `--org` can be left out: `share` and `autoshare on` then use your default org (saved at login), or your only org. `unshare`, `autoshare off` and `refresh` without `--org` cover every org. `autoshare on` shares every new session of that project; `--backfill` also shares the ones already uploaded. `off` removes the rule; sessions already shared stay shared. Sharing shows the cleaned turns to every active member of the org, and unsharing hides them again but cannot un-tell someone who already read them. The org owns what is shared to it.
+
+**Delete.** `spookling delete <session id>` removes one uploaded session from the cloud; `spookling delete --all` removes every session you uploaded. It deletes the cloud copy only: local memory (`.memory/`) is never touched. On a terminal it asks first (`--all` asks you to type `DELETE`); without a terminal it refuses unless you pass `--yes`. Sessions shared with an org belong to the org: they are kept and listed as skipped. A deleted session is marked in `~/.spookling/upload-state.json` and never uploads again, even if you keep working in it; sessions you start later upload as usual. Deleting a session that is already gone counts as done. The MCP tool `memory_delete(session_id | all=true)` does the same from chat, and always opens a yes/no dialog first (for one session and for all); a client that cannot show it gets the `spookling delete` command to run instead.
 
 You can also ask in the chat: when you are logged in, the prompt hook tells Claude the session id (and nothing else), and the MCP tools `memory_share`, `memory_autoshare` and `memory_share_status` do the same as the commands above. Sharing from chat (`memory_share`, `memory_autoshare on`, and always `--backfill`) first opens a yes/no dialog in your client (MCP elicitation) that names the session or project, the org and, for a backfill, how many sessions; nothing happens without your yes. If your client cannot show that dialog, the tool does nothing and tells Claude to have you run the `spookling share` or `spookling autoshare` command yourself. Unsharing and `autoshare off` reduce exposure and need no confirmation. Text inside a colleague's session can never trigger any of this. `memory_export` and `memory_import` read and write only `~/.spookling/exports/`, and `memory_export` will not replace a file unless `overwrite` is true.
 

@@ -230,3 +230,50 @@ def test_import_reads_from_the_folder_by_name_or_full_path(exports):
     (exports / "a.spookling").write_bytes(b"DATA")
     assert M.memory_import("a.spookling") == {"raw": b"DATA"}
     assert M.memory_import(str(exports / "a.spookling")) == {"raw": b"DATA"}
+
+
+def deleted(calls):
+    return [c for c in calls if c[0] in ("delete", "delete-all")]
+
+
+def test_delete_is_listed_and_says_cloud_only():
+    tools = {t.name: t for t in run(M.server.list_tools())}
+    assert "ctx" not in tools["memory_delete"].input_schema.get("properties", {})
+    d = tools["memory_delete"].description
+    assert "NOT deleted" in d and "cloud" in d and "colleague" in d
+
+
+def test_delete_one_asks_then_acts_on_yes(team):
+    ctx = Ctx(Res("accept", True))
+    assert run(M.memory_delete("sid1", False, ctx)) == {"ok": True, "name": "delete"}
+    assert "'sid1'" in ctx.asked[0] and "not deleted" in ctx.asked[0]
+    assert deleted(team) == [("delete", {"sessionId": "sid1"})]
+
+
+def test_delete_all_asks_then_acts_on_yes(team):
+    ctx = Ctx(Res("accept", True))
+    assert run(M.memory_delete(None, True, ctx)) == {"ok": True, "name": "delete-all"}
+    assert "ALL" in ctx.asked[0]
+    assert deleted(team) == [("delete-all", {})]
+
+
+@pytest.mark.parametrize("answer", [Res("decline"), Res("cancel"), Res("accept", False), Res("accept")])
+@pytest.mark.parametrize("all_", [False, True])
+def test_delete_does_nothing_without_a_clear_yes(team, answer, all_):
+    out = run(M.memory_delete(None if all_ else "sid1", all_, Ctx(answer)))
+    assert out["ok"] is False and "did not confirm" in out["message"]
+    assert deleted(team) == []
+
+
+def test_delete_without_elicitation_returns_the_cli_command(team):
+    for ctx, args, cmd in ((None, ("sid 1", False), "spookling delete 'sid 1'"), (Ctx(boom=True), (None, True), "spookling delete --all")):
+        out = run(M.memory_delete(*args, ctx))
+        assert out["ok"] is False and cmd in out["message"] and "deleting" in out["message"]
+    assert deleted(team) == []
+
+
+def test_delete_needs_exactly_one_target(team):
+    ctx = Ctx(Res("accept", True))
+    assert "error" in run(M.memory_delete(None, False, ctx))
+    assert "error" in run(M.memory_delete("sid1", True, ctx))
+    assert ctx.asked == [] and deleted(team) == []

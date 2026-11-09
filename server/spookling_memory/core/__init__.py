@@ -13,7 +13,7 @@ from .facts import Facts
 from .index_page import MIN_STRONG
 from .log import Log
 from .recall import Search, Values, check, reader_tokens, recall, rung, words
-from .sleep import full, light
+from .sleep import full, light, rebuild
 from .triage import WRITER, ModelTriage, Spent, Triage, Vocab
 
 VERSION = "6.1"  # names memory-bench's result files, with a config fingerprint
@@ -165,6 +165,38 @@ class SpooklingMemory(Memory):
         if self.full_every and self.sessions_since_full >= self.full_every:
             full(self)
             self.sessions_since_full = 0
+
+    def append(self, session) -> int:
+        """The raw turns into the LOG, no model call: how many were new. sleep() judges them, now or later."""
+        n = 0
+        for i, t in enumerate(session.turns):
+            if self.log.append(session.agent, session.id, i, t.role, session.ts, t.content) is not None:
+                n += 1
+                self.turns_since_light += 1
+        return n
+
+    def sleep(self) -> None:
+        """The model half of ingest(): judge every turn past tag_cursor. A failure leaves tag_cursor where it got to."""
+        light(self)
+        self.turns_since_light = 0
+        self.sessions_since_full += 1
+        if self.full_every and self.sessions_since_full >= self.full_every:
+            full(self)
+            self.sessions_since_full = 0
+
+    def untagged(self) -> int:
+        return sum(e.seq > self.tag_cursor for e in self.log.events)
+
+    def owed(self) -> int:
+        """Model work waiting: turns not yet judged, and slow-path items not yet ruled on."""
+        triaged = [d for d in self.log.decisions if d["step"] == "triage"]
+        ruled = {(d["seq"], d["idx"]) for d in self.log.decisions if d["step"] == "resolve"}
+        return self.untagged() + sum(d["route"] == "slow" and (d["seq"], d["idx"]) not in ruled for d in triaged)
+
+    def rebuild(self) -> None:
+        """The views without a model call (see sleep.rebuild)."""
+        with self._lock:
+            rebuild(self)
 
     def compact(self, session_id: str) -> None:
         """Keep the session's rules, decisions, values, dates, paths and names verbatim, pointing into the LOG."""

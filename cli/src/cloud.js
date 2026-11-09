@@ -127,7 +127,7 @@ async function request(base, path, { method, token, body, fetchImpl, timeoutMs }
       status: res.status,
       code: err.code || null,
       reason: err.details?.reason || null,
-      retryAfter: retry,
+      retryAfter: retry ?? retryAfter(err.details?.retryAfter),
     });
   }
   if (!json || json.success !== true || !('data' in json)) {
@@ -177,6 +177,13 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
       if (project) q.set('project', project);
       if (cursor) q.set('cursor', cursor);
       return call(`/memory/sessions?${q}`, { method: 'GET', token: t || auth() });
+    },
+    deleteSession({ sid, token: t }) {
+      return call(`/memory/sessions/${encodeURIComponent(sid)}`, { method: 'DELETE', token: t || auth() });
+    },
+    // one batch; the caller loops while `remaining` > 0
+    deleteAllSessions({ token: t } = {}) {
+      return call('/memory/sessions', { method: 'DELETE', token: t || auth() });
     },
     setAutoShare({ project, orgId, backfill, token: t }) {
       return call(`/memory/projects/${encodeURIComponent(project)}/autoshare/${encodeURIComponent(orgId)}`, {

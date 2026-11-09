@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpHome } from './helpers.mjs';
 import { writeCredentials } from '../src/credentials.js';
-import { maskSecrets } from '../src/mask.js';
+import { TURN_CAP, maskSecrets } from '../src/mask.js';
 import { orgs } from '../src/account.js';
 import { main } from '../src/main.js';
 import { pendingUploads, projectLog } from '../src/push.js';
@@ -144,9 +144,9 @@ test('mask: ordinary text and URLs without credentials stay as they are', () => 
   assert.equal(maskSecrets('postgres://admin:hunter2pw@db/x'), 'postgres://[secret]@db/x');
 });
 
-test('uploaded turns and title are masked, a key split by the 4000 cap too, and the log text is untouched', () => {
+test('uploaded turns and title are masked, a key split by the turn cap too, and the log text is untouched', () => {
   const line = (o) => JSON.stringify({ session_id: 's', ts: '2026-11-03T09:00:00Z', ...o });
-  const long = `${'a '.repeat(1990)}${JWT}`;
+  const long = `${'a '.repeat(TURN_CAP / 2 - 5)}${JWT}`; // the key starts 10 characters before the cap
   const raw = [
     line({ role: 'user', text: `use ${JWT} please` }),
     line({ role: 'assistant', text: PEM }),
@@ -160,5 +160,5 @@ test('uploaded turns and title are masked, a key split by the 4000 cap too, and 
   assert.ok(!sent.includes('eyJzdWIi'), 'jwt payload');
   assert.ok(!sent.includes('MIIEowIBAAKCAQEA7'), 'pem');
   assert.equal(s.session.title, 'use [secret] please');
-  assert.ok(s.turns[2].text.length <= 4000);
+  assert.ok(s.turns[2].text.length <= TURN_CAP + 1);
 });

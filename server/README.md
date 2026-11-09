@@ -90,10 +90,10 @@ the turns not yet logged (the server reads `transcript_path`, and adds `last_ass
 caught up), PreCompact does the same and then keeps the session's rules, decisions, values, dates, paths and names,
 and UserPromptSubmit adds the recalled block as `additionalContext`, cut at 10,000 characters, Claude Code's cap. A
 `C:\...` transcript path from a Windows Claude Code is read through `/mnt/c` when the server runs in WSL. What is
-logged is the user's own words and the assistant's final prose (its text after the turn's last tool call), cleaned by
+logged is the user's own words and every piece of the assistant's prose (a text after a tool call is its own entry), cleaned by
 `hooks.clean()`: no `<x-y>` wrapper blocks (system reminders, task notifications, pastes, our own blocks), no fenced
 code, no line that looks like JSON, a log, a stack trace, a shell or diff line or a terminal table, no line that is
-mostly not letters, API keys and `*_TOKEN=`-style values masked, at most 4,000 characters a turn. A turn that cleans
+mostly not letters, API keys and `*_TOKEN=`-style values masked, at most 16,000 characters a turn. A turn that cleans
 to nothing (a task notification) keeps its place but is not logged; its tail part is then `<id>#<from>-<to>`. In
 `.claude/settings.json` (exec form: no shell, so no path needs quoting; Claude Code v2.1.139 or later):
 

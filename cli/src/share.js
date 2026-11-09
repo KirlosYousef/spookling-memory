@@ -7,7 +7,7 @@ import { readCredentials } from './credentials.js';
 
 const NOT_LOGGED_IN = 'Not logged in. Run spookling login first.';
 
-function client(env, home, cloud) {
+export function client(env, home, cloud) {
   if (cloud) return { cloud, error: null };
   if (!readCredentials({ env, home }).token) return { cloud: null, error: NOT_LOGGED_IN };
   try {
@@ -18,11 +18,13 @@ function client(env, home, cloud) {
   }
 }
 
-function explain(e, env, home) {
+export function explain(e, env, home) {
   const net = networkMessage(e, { env, home });
   if (net) return net;
   if (!(e instanceof CloudError)) return 'Could not reach the Spookling API.';
   if (e.status === 401) return 'The saved login was rejected. Run spookling login again.';
+  if (e.status === 403 && e.reason === 'org_owned') return 'That session is shared with an org and now belongs to it, so it cannot be deleted from here.';
+  if (e.status === 410) return 'That session was already deleted; it cannot be changed.';
   if (e.status === 403) return 'Not allowed: you must be an active member of that org.';
   if (e.status === 404) return 'The server does not know that session or org yet.';
   if (e.status === 429) return 'Rate limited. Try again in a moment.';

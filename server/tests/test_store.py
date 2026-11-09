@@ -56,19 +56,22 @@ def test_tail_ingest_logs_only_new_turns(open_store):
     assert s.compact("cc")["kept"] == 0
 
 
-def test_a_failed_tagging_call_writes_nothing(open_store, tmp_path):
+def test_a_failed_tagging_call_still_logs_the_turns(open_store, tmp_path):
     class Down(Stub):
         def judge(self, turns, date, known):
             raise ConnectionError("model down")
 
     s = open_store()
     s.mem.triage = Down(TAGS)
-    with pytest.raises(ConnectionError):
-        fill(s, HISTORY[:1])
-    assert not (tmp_path / "m" / "log.jsonl").exists()  # never a turn on disk that was not tagged
+    fill(s, HISTORY[:1])  # no exception: the turns are the truth and the model may fail
+    assert len((tmp_path / "m" / "log.jsonl").read_text().splitlines()) == 4
+    assert (tmp_path / "m" / "pending.json").exists()  # and they are marked as waiting for the model
     s.mem.triage = Stub(TAGS)
-    fill(s, HISTORY[1:2])  # the next good call writes both sessions, tagged
+    s._retry_at = 0
+    fill(s, HISTORY[1:2])  # the next good call judges both sessions
     assert len((tmp_path / "m" / "log.jsonl").read_text().splitlines()) == 8
+    assert not (tmp_path / "m" / "pending.json").exists()
+    assert any(d["source"] == s.mem.log.events[0].hash for d in s.mem.log.decisions)
     s.close()
     assert len(open_store().mem.log.events) == 8
 

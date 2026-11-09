@@ -51,7 +51,8 @@ CACHE_ONLY = False  # bench verify / failures: a cache miss is an error, never a
 DEFER = False  # bench run --batch: reader/judge misses are parked in PENDING, not sent
 SPEND_ONLY = False  # batch collect passes: record money spent, not the per-call list cost
 PENDING: dict[str, dict] = {}  # cache key -> {"model", "request"} waiting for a batch
-STOPPED: str | None = None  # set by the first credit/billing error: no new call is sent after it
+STOPPED: str | None = None  # set by the first credit/billing/key error: no new call is sent after it
+STOP_INFO: dict | None = None  # the same, as data (stop_info)
 USAGE: dict[str, dict] = {}  # model -> totals for this process
 SLEEP = time.sleep  # tests replace it
 
@@ -67,19 +68,50 @@ class CacheMiss(RuntimeError):
 
 
 class CreditExhausted(RuntimeError):
-    """Out of credit: never retried; the first one stops every new call in this process."""
+    """The key cannot be used (out of credit, over its limit, invalid or disabled): never retried; the first one stops
+    every new call in this process."""
+
+
+KEY_WORDS = ("key limit", "limit exceeded", "limit reached", "over its limit", "spend limit", "invalid api key", "invalid key",
+             "invalid x-api-key", "incorrect api key", "key is disabled", "key disabled", "disabled", "revoked", "expired",
+             "no auth credentials", "user not found", "insufficient credit")
 
 
 def is_credit_error(e: Exception) -> bool:
+    """Credit gone (402, Anthropic's 400) or a key the provider refuses: a 401/403 that says it is over its limit, invalid
+    or disabled (OpenRouter's 403 "Key limit exceeded"). Other 401/403s (a model the key may not use) are not."""
     status, text = getattr(e, "status_code", None), str(e).lower()
-    return (status == 402 and "in_flight" not in text) or (status == 400 and "credit balance" in text)
+    return ((status == 402 and "in_flight" not in text) or (status == 400 and "credit balance" in text)
+            or (status in (401, 403) and any(w in text for w in KEY_WORDS)))
 
 
-def _stop(e: Exception) -> CreditExhausted:
-    global STOPPED
+def stop_kind(e: Exception) -> str:
+    """credit: out of money; limit: the key's own cap; key: refused as invalid or disabled."""
+    text = str(e).lower()
+    if "limit" in text and getattr(e, "status_code", None) in (401, 403):
+        return "limit"
+    return "credit" if getattr(e, "status_code", None) in (400, 402) or "credit" in text else "key"
+
+
+def provider_of(model: str | None) -> str:
+    return "anthropic" if model and route(model) == "anthropic" else "openrouter"
+
+
+def _stop(e: Exception, model: str | None = None) -> CreditExhausted:
+    global STOPPED, STOP_INFO
     with _lock:
-        STOPPED = STOPPED or f"credit exhausted: {str(e)[:300]}"
+        kind = stop_kind(e)
+        label = {"credit": "credit exhausted", "limit": "key limit exceeded", "key": "key refused"}[kind]
+        STOPPED = STOPPED or f"{label}: {str(e)[:300]}"
+        if STOP_INFO is None:  # the first one is the one to show
+            STOP_INFO = {"kind": kind, "provider": provider_of(model),
+                         "since": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "reason": STOPPED}
     return CreditExhausted(STOPPED)
+
+
+def stop_info() -> dict | None:
+    """Why no model call is sent any more in this process, for status: {kind, provider, since, reason}, or None."""
+    return STOP_INFO
 
 
 class Deferred(RuntimeError):
@@ -367,7 +399,7 @@ def call(model: str, messages: list[dict], **params) -> Reply:
                         _store(key, model, text, pt, ct, provider, finish)
                 except Exception as e:
                     if is_credit_error(e):
-                        raise _stop(e) from None
+                        raise _stop(e, model) from None
                     raise
                 stored = _cached(key)
                 stored.cache_hit, stored.seconds, stored.usd = False, time.monotonic() - t0, usd
@@ -530,7 +562,7 @@ def run_batches(pending: dict[str, dict], state_dir: Path) -> int:
                 requests=[{"custom_id": k, "params": todo[k]["request"]} for k in keys])
         except Exception as e:
             if is_credit_error(e):
-                raise _stop(e) from None
+                raise _stop(e, todo[keys[0]]["model"]) from None
             raise
         f = state_dir / f"{b.id}.json"
         f.write_text(json.dumps({"id": b.id, "created": datetime.now(timezone.utc).isoformat(), "collected": False,

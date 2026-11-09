@@ -196,13 +196,13 @@ test('status prints the update line; whoami prints it at most once a day, from t
   const said = [];
   const w = process.stdout.write;
   process.stdout.write = (s) => { said.push(String(s)); return true; };
-  try { await status(home, async () => null, home, { update: { env: {}, fetchImpl: registry('0.2.1') } }); } finally { process.stdout.write = w; }
-  assert.match(said.join('').replace(/\x1b\[[0-9;]*m/g, ''), /! update   0\.2\.1 is available\. Run spookling update\./);
+  try { await status(home, async () => null, home, { update: { env: {}, fetchImpl: registry('9.9.9') } }); } finally { process.stdout.write = w; }
+  assert.match(said.join('').replace(/\x1b\[[0-9;]*m/g, ''), /! update   9\.9\.9 is available\. Run spookling update\./);
   // the cache is now warm; whoami reads it and shows the line once
   const t = Date.now();
-  assert.equal(cachedNotice({ home, current: VERSION === '0.2.1' ? '0.2.0' : VERSION, env: {}, now: () => t }), '0.2.1');
+  assert.equal(cachedNotice({ home, current: VERSION, env: {}, now: () => t }), '9.9.9');
   assert.equal(cachedNotice({ home, current: '0.2.0', env: {}, now: () => t + 3600_000 }), null, 'not again within a day');
-  assert.equal(cachedNotice({ home, current: '0.2.0', env: {}, now: () => t + 25 * 3600_000 }), '0.2.1');
+  assert.equal(cachedNotice({ home, current: '0.2.0', env: {}, now: () => t + 25 * 3600_000 }), '9.9.9');
   assert.equal(cachedNotice({ home, current: '0.2.0', env: { SPOOKLING_NO_UPDATE_CHECK: '1' }, now: () => t + 99 * 3600_000 }), null);
   void whoami;
 });
