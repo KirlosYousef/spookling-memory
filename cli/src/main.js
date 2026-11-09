@@ -12,6 +12,7 @@ import { login, logout, orgs, tokens, whoami } from './account.js';
 import { VERSION, clean, originWarning } from './cloud.js';
 import { updateAvailable } from './registry.js';
 import { refresh } from './team.js';
+import { deleteAllSessions, deleteSession, formatDelete } from './delete.js';
 import { setProjectAutoShare, setSessionShare, shareStatus } from './share.js';
 
 const HELP = `Spookling Memory
@@ -36,6 +37,8 @@ const HELP = `Spookling Memory
   spookling share <session id> [--org <id or name>]     share a session with an org
   spookling unshare <session id> [--org <id or name>]   stop sharing it (all orgs without --org)
   spookling autoshare <project> on|off [--org <id or name>] [--backfill]   share every new session of a project
+  spookling delete <session id> [--yes]   delete one uploaded session from the cloud (local memory is kept; asks first)
+  spookling delete --all [--yes]          delete all your uploaded sessions from the cloud (type DELETE to confirm)
 
   --org: share and autoshare on use your default org if you did not name one, else your only org;
          unshare, autoshare off and refresh without --org cover every org
@@ -92,7 +95,7 @@ const usage = (text) => { throw new UsageError(text); };
 // the words of a command that are not flags or flag values
 const operands = (args, valued = ['org', 'limit']) => args.slice(1).filter((a, i, all) => !a.startsWith('--') && !valued.some((n) => all[i - 1] === `--${n}`));
 // commands that talk to the API with the saved login: a different SPOOKLING_API_URL is called out before they run
-const AUTHENTICATED = new Set(['logout', 'whoami', 'orgs', 'tokens', 'refresh', 'sessions', 'share', 'unshare', 'autoshare']);
+const AUTHENTICATED = new Set(['logout', 'whoami', 'orgs', 'tokens', 'refresh', 'sessions', 'share', 'unshare', 'autoshare', 'delete']);
 
 // sessions, share, unshare, autoshare: who can see your own sessions
 async function sharing(cmd, args, { fns, home, org }) {
@@ -114,6 +117,33 @@ async function sharing(cmd, args, { fns, home, org }) {
   return out.error ? 1 : 0;
 }
 
+async function readLine(question) {
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try { return await rl.question(question); } finally { rl.close(); }
+}
+
+// delete <id> | delete --all: from the cloud only. A terminal asks first (--all: type DELETE); no terminal needs --yes.
+async function deleteCommand(args, { fns, home }, { ask, tty }) {
+  const all = args.includes('--all'), yes = args.includes('--yes');
+  const rest = operands(args, []);
+  if (all && rest.length) usage('usage: spookling delete <session id> | spookling delete --all  (not both)');
+  if (!all && !rest[0]) usage('usage: spookling delete <session id> [--yes] | spookling delete --all [--yes]');
+  if (!yes) {
+    if (!tty) usage('spookling delete asks for confirmation and this is not a terminal. Add --yes to delete without asking.');
+    const what = all ? 'ALL your uploaded sessions' : `session ${rest[0]}`;
+    process.stdout.write(`This deletes ${what} from the Spookling cloud. It cannot be undone. Local memory (.memory/) is not touched.\n`);
+    const answer = String(await ask(all ? 'Type DELETE to confirm: ' : 'Delete it? [y/N] ')).trim();
+    if (all ? answer !== 'DELETE' : !/^y(es)?$/i.test(answer)) {
+      process.stdout.write('Nothing deleted.\n');
+      return 0;
+    }
+  }
+  const out = all ? await fns.delete.all({ home, log: (m) => process.stdout.write(`${m}\n`) }) : await fns.delete.one({ sessionId: rest[0], home });
+  process.stdout.write(`${formatDelete(out)}\n`);
+  return out.error ? 1 : 0;
+}
+
 function tokensCommand(args, { fns, home }) {
   const rest = operands(args, []);
   if (rest[0] && rest[0] !== 'revoke') usage('usage: spookling tokens | spookling tokens revoke <id> | spookling tokens revoke --all');
@@ -123,8 +153,9 @@ function tokensCommand(args, { fns, home }) {
 async function route(args, deps) {
   const fns = {
     init, refresh, login, logout, whoami, orgs, tokens, status, update, restore, initUpdate, uninstall, backfill,
+    delete: { one: deleteSession, all: deleteAllSessions },
     share: { status: shareStatus, session: setSessionShare, project: setProjectAutoShare },
-    ...Object.fromEntries(Object.entries(deps).filter(([, v]) => typeof v === 'function' || (v && typeof v === 'object' && 'status' in v))),
+    ...Object.fromEntries(Object.entries(deps).filter(([, v]) => typeof v === 'function' || (v && typeof v === 'object' && ('status' in v || 'one' in v)))),
   };
   const cmd = !args[0] || ['-h', '--help'].includes(args[0]) ? 'help' : args[0];
   const anim = !args.includes('--no-anim'), fast = args.includes('--fast'), ghost = !args.includes('--no-ghost');
@@ -158,6 +189,7 @@ async function route(args, deps) {
     case 'update': return fns.update({ home, cwd, check: args.includes('--check'), version: flag(args, 'version', 'needs a version, like 1.2.3'), force: args.includes('--force') });
     case 'refresh': return fns.refresh({ home, orgId: org });
     case 'sessions': case 'share': case 'unshare': case 'autoshare': return sharing(cmd, args, ctx);
+    case 'delete': return deleteCommand(args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'login': return fns.login({ home, cwd, apiUrl });
     case 'logout': return fns.logout({ home });
     case 'orgs': return fns.orgs({ home });

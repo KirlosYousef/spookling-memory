@@ -167,11 +167,12 @@ function repeatedConflict(raw, turns) {
   return extendsKey(record.key, turnKey(turns));
 }
 
-const PERMANENT = new Set(['org_owned', 'turn_limit', 'session_limit']);
+const PERMANENT = new Set(['org_owned', 'turn_limit', 'session_limit', 'session_deleted']);
 const SKIP_TEXT = {
   org_owned: 'shared with an org you left',
   turn_limit: 'over the turn limit',
   session_limit: 'over the session limit',
+  session_deleted: 'deleted from the cloud',
 };
 export const skipText = (reason) => SKIP_TEXT[reason] || reason;
 
@@ -184,7 +185,7 @@ export function uploadProblems(home = homedir(), env = process.env) {
   const state = readState(home, accountScope(home, env));
   const skipped = Object.entries(state.skipped)
     .map(([sid, raw]) => ({ sid, reason: permanentSkip(raw) }))
-    .filter((x) => x.reason)
+    .filter((x) => x.reason && x.reason !== 'session_deleted') // a deleted session is not a problem
     .sort((a, b) => a.sid.localeCompare(b.sid));
   return { skipped, loginExpired: !!state.auth?.expired };
 }
@@ -194,6 +195,12 @@ export async function clearLoginExpired(home = homedir(), env = process.env) {
   const scope = accountScope(home, env);
   if (!readState(home, scope).auth) return;
   await updateState(home, (st) => { st.auth = null; }, { scope });
+}
+
+/** Sessions the user deleted from the cloud (local state only): they must never upload again. */
+export function deletedSessionIds(home = homedir(), env = process.env) {
+  const state = readState(home, accountScope(home, env));
+  return new Set(Object.entries(state.skipped).filter(([, raw]) => permanentSkip(raw) === 'session_deleted').map(([sid]) => sid));
 }
 
 export function skippedSessionIds(home = homedir(), env = process.env) {
@@ -293,6 +300,7 @@ export function classifyError(e) {
     if ((e.status === 403 && why === 'org_owned') || (e.status === 400 && (why === 'turn_limit' || why === 'session_limit'))) {
       return { kind: 'permanent', reason: why };
     }
+    if (e.status === 410) return { kind: 'permanent', reason: 'session_deleted' }; // deleted on purpose: never re-upload
     if (e.status === 401) return { kind: 'auth' };
   }
   return { kind: 'retry' };
@@ -422,6 +430,7 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
           if (c.kind === 'gap' && !healed) {
             // the saved cursor is ahead of the server: ask where the server is, resend from there, once
             healed = true;
+            if (permanentSkip(readState(home, scope).skipped[item.sid])) break; // deleted (or refused for good) meanwhile: never resend
             const at = await serverLastSeq({ client, creds, sid: item.sid });
             const all = full.get(item.sid);
             if (at !== null && all) {
@@ -446,7 +455,11 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
             });
           } else if (c.kind === 'permanent') {
             log(`session ${item.sid} skipped: ${c.reason}`);
-            await persist(ctx, (st) => { st.skipped[item.sid] = { reason: c.reason, permanent: true }; st.queue = st.queue.filter((q) => q.sid !== item.sid); });
+            await persist(ctx, (st) => {
+              st.skipped[item.sid] = { reason: c.reason, permanent: true };
+              if (c.reason === 'session_deleted') delete st.cursors[item.sid];
+              st.queue = st.queue.filter((q) => q.sid !== item.sid);
+            });
             if (c.reason === 'session_limit') noNewSessions = true;
           } else if (c.kind === 'auth') {
             // expired or revoked: nothing after this can work. The login is kept; status says to log in again.
