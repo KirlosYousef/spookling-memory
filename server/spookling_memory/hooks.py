@@ -15,7 +15,7 @@ CAP = 10_000  # Claude Code's cap, in UTF-16 units; a longer value reaches Claud
 OURS = re.compile(r"<(invariant|recalled-data|memory-index|kept-before-compaction)\b.*?</\1>", re.S)
 COMMAND = ("<command-", "<local-command-")  # slash-command wrappers and their output
 MNT = Path("/mnt")  # WSL's default automount root
-TURN_CAP = 4000
+TURN_CAP = 16000  # the backend takes 20,000 characters a turn (MAX_TURN_TEXT); the client sends at most TURN_CAP + 2 (" …") of them
 PULSE = "x-spookling-pulse"  # a hook call's counts as JSON, for the status line; the body stays what Claude Code reads
 LOG = logging.getLogger("uvicorn.error")  # uvicorn's, so it lands in .memory/server.log
 
@@ -108,11 +108,16 @@ def _entries(path: str | Path) -> list[dict]:
 
 
 def _build(entries: list[dict]) -> list[tuple[dict, int, int]]:
-    """The turns of these transcript lines, each with the index of its first and last line."""
+    """The entries of these transcript lines, each with the index of its first and last line. Consecutive lines of one role are
+    one entry, except that an assistant text that follows a tool call or a skipped meta record (a task notification, a subagent
+    hand-back) is a new entry: every reply Claude showed is kept, none replaces an earlier one."""
     out: list[tuple[dict, int, int]] = []
-    tool = False  # a tool call since the assistant's last text: its next text replaces the narration
+    split = False  # a tool call or meta record since the assistant's last text: its next text is a new entry
     for i, e in enumerate(entries):
-        if e.get("type") not in ("user", "assistant") or e.get("isMeta") or e.get("isSidechain") or e.get("isCompactSummary"):
+        if e.get("type") not in ("user", "assistant") or e.get("isSidechain") or e.get("isCompactSummary"):
+            continue
+        if e.get("isMeta"):
+            split = True
             continue
         c = (e.get("message") or {}).get("content")
         blocks = [b for b in c if isinstance(b, dict)] if isinstance(c, list) else []
@@ -120,24 +125,23 @@ def _build(entries: list[dict]) -> list[tuple[dict, int, int]]:
         text = c if isinstance(c, str) else "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
         text = OURS.sub("", text).strip()
         if not text or text.startswith(COMMAND):  # what earlier versions skipped, so the places line up
-            tool = tool or called
+            split = split or called
             continue
         text = clean(text)
-        if out and out[-1][0]["role"] == e["type"]:
+        if out and out[-1][0]["role"] == e["type"] and not (e["type"] == "assistant" and split and text):
             turn, first, _ = out[-1]
-            if e["type"] == "assistant" and tool and text:
-                turn["content"] = text
-            elif text:
+            if text:
                 turn["content"] = (turn["content"] + "\n\n" + text).strip()
             out[-1] = (turn, first, i)
         else:
             out.append(({"role": e["type"], "content": text}, i, i))
-        tool = called
+        split = called
     return out
 
 
 def turns(path: str | Path) -> list[dict]:
-    """One entry per turn; a part that cleans to nothing stays as an empty entry, since Store.ingest counts places."""
+    """One entry per user turn and per assistant reply; a part that cleans to nothing stays as an empty entry, since
+    Store.ingest counts places."""
     return [t for t, _, _ in _build(_entries(path))]
 
 
@@ -235,7 +239,7 @@ def codex_turns(path: Path) -> list[dict]:
         if text.lstrip().startswith(("# AGENTS.md instructions", "<environment_context>", "<permissions instructions>")):
             continue
         text = clean(text)
-        if out and out[-1]["role"] == role:
+        if out and out[-1]["role"] == role and (role == "user" or not text):  # each final answer is its own entry
             if text:
                 out[-1]["content"] = (out[-1]["content"] + "\n\n" + text).strip()
         else:
@@ -254,9 +258,11 @@ def counts(ctx: str) -> dict:
             "chars": len(ctx), "cap": CAP}
 
 
-def log_transcript(store, agent: str, sid: str, transcript, last: str = "", patient: bool = False) -> int:
+def log_transcript(store, agent: str, sid: str, transcript, last: str = "", patient: bool = False,
+                   recover: bool = False) -> int:
     """Log the turns of a transcript file the LOG does not hold yet (Store.ingest counts places, so a repeat adds nothing);
-    returns how many were new. The raw turns reach log.jsonl before any model is asked."""
+    returns how many were new. The raw turns reach log.jsonl before any model is asked. recover: also log the entries of the
+    transcript that no logged text covers, wherever they sit (replies an earlier version dropped)."""
     path = local_path(str(transcript or ""))
     if not (path.suffix == ".jsonl" and path.is_file()):
         return 0
@@ -270,13 +276,17 @@ def log_transcript(store, agent: str, sid: str, transcript, last: str = "", pati
             LOG.warning("fork detection failed for %s: %r", sid, e)
     last = clean(last)
     if conversation and last:  # the file can lag the final reply at Stop
-        if conversation[-1]["role"] != "assistant":
+        tail = conversation[-1]
+        if tail["role"] != "assistant" or not tail["content"].strip():
             conversation.append({"role": "assistant", "content": last})
-        else:
-            conversation[-1]["content"] = last
+        elif last.startswith(tail["content"]) and last != tail["content"]:  # the file holds the start of it
+            tail["content"] = last
+        elif last not in tail["content"]:  # an earlier reply is the file's last: the final one is a new entry
+            conversation.append({"role": "assistant", "content": last})
     if not conversation:
         return 0
-    return store.ingest(sid, conversation, agent=agent, tail=True, patient=patient)  # Stop is after the reply: it may wait
+    return store.ingest(sid, conversation, agent=agent, tail=True, patient=patient, split=True,
+                        recover=recover)  # Stop is after the reply: it may wait
 
 
 def handle(store, event: str, p: dict) -> tuple[dict, dict]:

@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { CloudError, clean, createCloud } from './cloud.js';
 import { readCredentials, writeFileSecure } from './credentials.js';
-import { TURN_CAP, maskSecrets } from './mask.js';
+import { maskSecrets, maskTurn } from './mask.js';
 import { StateBusy, accountScope, claimSession, readState, shareJobs, updateState } from './upload-state.js';
 
 const LIST_PAGES = 20; // pages of your sessions searched for one when the server cannot be asked for it by id
@@ -114,7 +114,7 @@ export function projectLog(text, { forks = {}, modeOf = () => 'own' } = {}) {
     const turns = masked.map((ev, seq) => ({
       seq,
       role: ev.role,
-      text: ev.text.length > TURN_CAP ? ev.text.slice(0, TURN_CAP) : ev.text,
+      text: maskTurn(ev.text),
       ts: ev.ts,
     }));
     const titled = fork && ownMasked.length ? ownMasked : masked; // a fork is named by what it adds, not by the copy

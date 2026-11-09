@@ -25,7 +25,12 @@ PENDING = "pending.json"  # {"tagged_upto": seq} while turns in the LOG still wa
 RETRY = 60  # seconds before a model call that failed (not a latched key error) is tried again
 WARN = logging.getLogger("uvicorn.error")  # uvicorn's, so it lands in .memory/server.log
 WINDOWS = os.name == "nt"
-PART = re.compile(r"#(\d+)(?:-(\d+))?")  # a tail part: "#<from>" or "#<from>-<to>"
+PART = re.compile(r"#(e?)(\d+)(?:-(\d+))?")  # a tail part: "#<from>" or "#<from>-<to>"; "#e<from>-<to>" counts entries (see ingest)
+
+
+def covers(logged: str, text: str) -> bool:
+    """The logged text holds this entry: equal, part of a merged turn, or its capped start (an older, shorter cap ends " …")."""
+    return text == logged or text in logged or (logged.endswith(" …") and text.startswith(logged[:-2]))
 
 
 PROVIDER = {"openrouter": "OpenRouter", "anthropic": "Anthropic"}
@@ -243,22 +248,69 @@ class Store:
     def records(self) -> tuple[list[dict], list[dict]]:
         return [asdict(e) for e in self.mem.log.events], list(self.mem.log.decisions)
 
-    def _logged(self, session_id: str) -> int:
-        """How many turns of the conversation the LOG is past, from its "<id>#<a>" and "<id>#<a>-<b>" parts."""
+    def _logged(self, session_id: str, entries: bool = False) -> int:
+        """How many turns of the conversation the LOG is past, from its "<id>#<a>" and "<id>#<a>-<b>" parts; with entries, how
+        many entries, from the "<id>#e<a>-<b>" parts only."""
         parts = Counter(e.session_id for e in self.mem.log.events
                         if e.session_id == session_id or e.session_id.startswith(session_id + "#"))
         upto = 0
         for part, n in parts.items():
             m = PART.fullmatch(part[len(session_id):])
-            upto = max(upto, int(m[2]) if m and m[2] else int(m[1]) + n if m else n)
+            if entries:
+                upto = max(upto, int(m[3]) if m and m[1] and m[3] else 0)
+            elif not (m and m[1]):
+                upto = max(upto, int(m[3]) if m and m[3] else int(m[2]) + n if m else n)
         return upto
 
+    def _texts(self, session_id: str, entries: bool) -> list[tuple[str, str]]:
+        """(role, text) of what the LOG holds of the conversation, in log order; of the entry parts, or of the older ones."""
+        out = []
+        for e in self.mem.log.events:
+            if e.session_id == session_id or e.session_id.startswith(session_id + "#"):
+                m = PART.fullmatch(e.session_id[len(session_id):])
+                if bool(m and m[1]) == entries:
+                    out.append((e.role, e.text))
+        return out
+
+    def _entries(self, session_id: str, turns: list[dict], recover: bool) -> list[int]:
+        """The places of `turns` (one entry per user turn and per assistant reply) to log now.
+
+        Old logs count merged turns (a later reply replaced an earlier one after a tool call), so their places do not line up
+        with entries. The first time a session is logged by entries, the logged texts are matched against the entries in order
+        (covers), and only the entries after the last one the LOG already holds are new. After that the places are entry
+        counts ("#e<from>-<to>" parts) and nothing is matched again. recover: also the entries no logged text covers."""
+        have = self._logged(session_id, True)
+        texts = self._texts(session_id, False) + self._texts(session_id, True)
+        if not have:  # not logged by entries yet: where the old log's last text sits in the entries
+            at = 0
+            for role, text in self._texts(session_id, False):
+                k = next((k for k in range(at, len(turns)) if turns[k]["role"] == role and covers(text, turns[k]["content"])), None)
+                if k is None:
+                    continue
+                while k + 1 < len(turns) and turns[k + 1]["role"] == role and covers(text, turns[k + 1]["content"]):
+                    k += 1  # a merged turn holds several replies
+                at = k + 1
+            have = at or min(self._logged(session_id), len(turns))  # nothing matched (another cleaning?): the old count is the best guess
+        new = list(range(have, len(turns)))
+        if recover:
+            new = [k for k in range(have) if turns[k]["content"].strip()
+                   and not any(r == turns[k]["role"] and covers(t, turns[k]["content"]) for r, t in texts)] + new
+        return [k for k in new if turns[k]["content"].strip()]
+
     def ingest(self, session_id: str, turns: list[dict], ts: str | None = None, agent: str = "user",
-               tail: bool = False, patient: bool = False) -> int:
-        """Returns how many turns were new. tail: turns is the whole conversation so far; patient: no wait limit."""
+               tail: bool = False, patient: bool = False, split: bool = False, recover: bool = False) -> int:
+        """Returns how many turns were new. tail: turns is the whole conversation so far; patient: no wait limit.
+        split: the turns are entries (hooks.turns: each assistant reply its own); a log made before that is continued by content."""
         with self._busy(None if patient else self.wait):
             m = self.mem
-            if tail:
+            if tail and split:
+                picked = self._entries(session_id, turns, recover)
+                if not picked:
+                    return 0
+                # "#e<first>-<all>": the entries are counted, so the next Stop starts after the last one however the old log counted
+                part = f"{session_id}#e{picked[0]}-{len(turns)}"
+                turns, session_id, ts = [turns[k] for k in picked], part, None
+            elif tail:
                 have = self._logged(session_id)
                 new = [t for t in turns[have:] if t["content"].strip()]
                 if not new:
