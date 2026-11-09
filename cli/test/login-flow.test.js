@@ -162,8 +162,29 @@ test('a backfill that fails never fails the login', async () => {
   const cloud = { ...fake(), upsertSession: async () => { throw down(); } };
   const r = await run(home, { confirm: async () => true }, cloud);
   assert.equal(r.code, 0);
-  assert.match(r.out, /Uploaded 0 sessions privately\.\nSome turns did not go up .*retry at the next Stop/);
+  assert.match(r.out, /Uploaded 0 sessions privately\.\n1 session could not be uploaded: ECONNREFUSED\.\n.*retry at the next Stop/);
   assert.equal(readCredentials({ home, env: {} }).token, 'spk_t');
+});
+
+test('a server 500 is reported with its status and code, and the sessions not tried are counted', async () => {
+  const home = homeOf();
+  writeLog(home, 's1', 's2', 's3');
+  let puts = 0;
+  const cloud = { ...fake(), upsertSession: async () => { puts += 1; throw new CloudError('INTERNAL_ERROR', { status: 500, code: 'INTERNAL_ERROR' }); } };
+  const r = await run(home, { confirm: async () => true }, cloud);
+  assert.equal(r.code, 0);
+  assert.equal(puts, 1, 'the uploader stops at the first refusal');
+  assert.match(r.out, /Uploaded 0 sessions privately\.\n1 session could not be uploaded: 500 INTERNAL_ERROR; 2 more were not tried\.\nThe server had a problem, not your setup\. They stay queued/);
+  assert.doesNotMatch(r.out, /spk_t/);
+});
+
+test('a 400 reason is shown and is not called a server problem', async () => {
+  const home = homeOf();
+  writeLog(home, 's1');
+  const cloud = { ...fake(), upsertSession: async () => { throw new CloudError('BAD_REQUEST', { status: 400, code: 'BAD_REQUEST', reason: 'weird' }); } };
+  const r = await run(home, { confirm: async () => true }, cloud);
+  assert.match(r.out, /1 session could not be uploaded: 400 BAD_REQUEST weird\.\nThey stay queued/);
+  assert.doesNotMatch(r.out, /server had a problem/);
 });
 
 test('with no TTY the real prompt takes Yes by default', () => {

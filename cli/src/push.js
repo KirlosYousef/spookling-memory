@@ -341,8 +341,9 @@ async function persist({ home, scope, log }, mutate) {
   }
 }
 
-// Why a call failed, for upload.log: the code or status, and the server's reason when it gave one. Never the token or any turn text.
-const why = (e) => [e?.code || e?.status || 'offline', e?.reason ? clean(e.reason) : null].filter(Boolean).join(' ');
+// Why a call failed, for upload.log and login: the HTTP status, the server's error code and its reason when it gave them ("500 INTERNAL_ERROR",
+// "400 BAD_REQUEST seq_gap"); "offline" when nothing answered. Never the token or any turn text.
+const why = (e) => [e?.status, e?.code || (e?.status ? null : 'offline'), e?.reason ? clean(e.reason) : null].filter(Boolean).join(' ');
 
 /**
  * Where the server is for a session: the last seq it holds, -1 when it has none, null when that cannot be told. Asked after a seq_gap,
@@ -384,6 +385,7 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
   const { home, scope, log } = ctx;
   let pushed = 0, stop = false, noNewSessions = false;
   const waiting = [];
+  const failed = []; // sessions whose upload was tried and refused: { sid, why }
   for (const first of items) {
     if (stop) { waiting.push(first); continue; }
     const release = await claimSession(home, first.sid);
@@ -464,11 +466,13 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
           } else if (c.kind === 'auth') {
             // expired or revoked: nothing after this can work. The login is kept; status says to log in again.
             log('upload queued: 401 (login expired; run spookling login)');
+            failed.push({ sid: item.sid, why: '401 (login expired; run spookling login)' });
             await persist(ctx, (st) => { st.auth = { expired: true, at: new Date().toISOString() }; queueItem(st, item); });
             waiting.push(item);
             stop = true;
           } else {
             log(isRateLimit(e) ? 'upload waiting: rate limited' : `upload queued: ${why(e)}`);
+            failed.push({ sid: item.sid, why: isRateLimit(e) ? 'rate limited' : why(e) });
             await persist(ctx, (st) => queueItem(st, item));
             waiting.push(item);
             stop = true;
@@ -483,7 +487,7 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
   if (waiting.length) {
     await persist(ctx, (st) => { for (const item of waiting) if (!st.queue.some((q) => q.sid === item.sid)) queueItem(st, item); });
   }
-  return { pushed, queued: waiting.length };
+  return { pushed, queued: waiting.length, failed };
 }
 
 // Pending shares are retried first. Only the ones that went through are removed, so a share another uploader added is kept.
@@ -550,9 +554,9 @@ async function upload({ logPath, logText, home, env, cloud, project, sessionId, 
   }
 
   await flushShares({ client, creds, ctx });
-  const { pushed, queued } = await deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, onProgress, full: new Map(projected.map((x) => [x.sid, x])) });
+  const { pushed, queued, failed } = await deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, onProgress, full: new Map(projected.map((x) => [x.sid, x])) });
   const pendingShare = readState(home, scope).shares.length > 0;
-  return { ok: queued === 0 && !pendingShare, queued: queued > 0 || pendingShare, pushed };
+  return { ok: queued === 0 && !pendingShare, queued: queued > 0 || pendingShare, pushed, queuedCount: queued, failed };
 }
 
 /** Stop-hook path. It does not throw when the network is down. */
