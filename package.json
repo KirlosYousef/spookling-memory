@@ -1,6 +1,6 @@
 {
   "name": "spookling",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Spookling Memory for Claude Code and Codex: the install wizard, the local memory server and the hooks.",
   "type": "module",
   "bin": {
