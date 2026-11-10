@@ -451,7 +451,7 @@ spookling delete --all [--yes]          # delete all of yours, in batches
 
 - `init --allow-share` adds the rules without asking; `init --no-allow-share` leaves them out without asking. Without either flag, init asks at a terminal and otherwise skips the question and says how to allow it.
 - A "no" is remembered in `~/.spookling/share-allow.json`, so `login` and `spookling update` do not ask again. `init` always asks.
-- `uninstall` removes only the rules Spookling itself added (it records them per settings file in `share-allow.json`; a rule you had before stays, even if it is one of the four) and the `/spookling-share` command, as it removes the hooks.
+- `uninstall` removes only the rules Spookling itself added (it records them per settings file in `share-allow.json`; a rule you had before stays, even if it is one of the five) and the `/spookling-share` command, as it removes the hooks.
 
 **Pending shares.** Sharing a session that is not saved yet uploads it now from its local log. If that fails, the share is queued and applies after the session's next save. `unshare` cancels a queued share, and `memory_share_status` reports it as `share pending`. A queued share is dropped after 7 days (noted in `~/.spookling/upload.log`). If the server refuses a queued share when it is applied (not a member, session or org gone, login rejected), the share is dropped and the next `spookling share`, `sessions`, `status` or `memory_share_status` says so once, for example `Share of 'Fix login' to Acme did not apply: 403 not a member`. A session id you type that is in no local log and not on the server is an error (`No session <id> found here or in the cloud`) and queues nothing. `spookling refresh` retries queued uploads and shares and prints the result.
 

@@ -96,7 +96,7 @@ Windows sessions then log into the WSL project's `.memory/`; the server reads th
 - `--limit N` and `--all` (sessions): 20 newest by default, then `Showing 20 of 43. spookling sessions --all for all.` Titles are cut at 80 characters. `--backfill` (autoshare) also shares sessions already uploaded.
 - `--scope project` (default) or `--scope user`, for `init` and `uninstall`. See the table below.
 - `--no-ghost` (init) skips the question about the ghost in the Claude Code status line, and leaves the status line alone.
-- `--allow-share` and `--no-allow-share` (init) add or leave out the four share tools in `permissions.allow` without asking. Without either, init asks at a terminal. Use only one of them.
+- `--allow-share` and `--no-allow-share` (init) add or leave out the five share tools in `permissions.allow` without asking. Without either, init asks at a terminal. Use only one of them.
 - `--yes` (share, delete) skips the confirmation. Without a terminal, share and delete refuse unless it is given.
 - `--no-anim` skips the animation: the wordmark prints as a still and the ghost's lines print as plain text.
 - `--fast` (demo only) drops the pauses. Without it the demo takes about a minute; any key cuts the current pause short.
