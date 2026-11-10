@@ -294,15 +294,30 @@ function isRateLimit(e) {
 }
 
 // One wait, then one retry. A hostile Retry-After cannot park the process all day.
-async function deliver(client, item, token, sleep, maxWaitMs, log) {
+async function deliver(client, item, token, sleep, maxWaitMs, log, { notify, status, pace } = {}) {
   try {
     return await sendSession(client, item, token);
   } catch (e) {
     if (!isRateLimit(e)) throw e;
     const seconds = Number(e.retryAfter) > 0 ? Number(e.retryAfter) : 1;
     const cap = Number(maxWaitMs) > 0 ? Number(maxWaitMs) : 30000;
-    log('upload waiting: rate limited');
-    await sleep(Math.min(seconds * 1000, cap));
+    const ms = Math.min(seconds * 1000, cap);
+    const secs = Math.ceil(ms / 1000);
+    log(`upload waiting: rate limited (${secs}s)`);
+    if (pace) pace.ms = Math.min(5000, Math.max(500, (pace.ms || 0) * 2)); // go gently for the rest of this run
+    if (typeof notify === 'function') {
+      try { notify(`Server asked us to slow down, waiting ${secs}s…`); } catch { /* ignore */ }
+    }
+    if (typeof status === 'function') {
+      // a countdown on the spinner so it does not look frozen
+      for (let left = secs; left > 0; left--) {
+        try { status(`waiting ${left}s`); } catch { /* ignore */ }
+        await sleep(Math.min(1000, ms - (secs - left) * 1000));
+      }
+      try { status(''); } catch { /* ignore */ }
+    } else {
+      await sleep(ms);
+    }
   }
   return sendSession(client, item, token);
 }
@@ -398,8 +413,10 @@ function tick(onProgress, done, total) {
 // Send `items` one session at a time. After each one the cursor (or the skip, or the queue entry) is saved on its own, merged into
 // whatever other uploaders saved meanwhile; a session another uploader is sending right now is left to it. `full` maps a session id to
 // its whole projected turns, for the one resend after a seq_gap.
-async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, onProgress }) {
+async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, onProgress, notify, status, pace }) {
   const { home, scope, log } = ctx;
+  const skipped = []; // sessions given up on: { sid, reason }
+  const say = (m) => { if (typeof notify === 'function') { try { notify(m); } catch { /* ignore */ } } };
   let pushed = 0, stop = false, noNewSessions = false;
   const waiting = [];
   const failed = []; // sessions whose upload was tried and refused: { sid, why }
@@ -421,7 +438,10 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
           fresh = { ...item, turns };
           // the account is full: sessions already on the server still grow, new ones wait for a later Stop
           if (noNewSessions && typeof now.cursors[item.sid] !== 'number') break;
-          const data = await deliver(client, fresh, creds.token, sleep || delay, maxWaitMs, log);
+          // pacing (past-session upload only): a short pause between sessions, longer once the server has pushed back
+          if (pace && pace.sent && pace.ms > 0) await (sleep || delay)(pace.ms);
+          if (pace) pace.sent = true;
+          const data = await deliver(client, fresh, creds.token, sleep || delay, maxWaitMs, log, { notify, status, pace });
           const last = fresh.turns[fresh.turns.length - 1];
           await persist(ctx, (st) => {
             if (last) {
@@ -467,6 +487,8 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
             const known = conflictRecord(readState(home, scope).skipped[item.sid]);
             // the note first: anything that sees the state change can then rely on the note being there
             log(known && extendsKey(known.key, key) ? `session ${item.sid} skipped: seq_conflict` : `session ${item.sid} seq_conflict; retrying on the next Stop`);
+            skipped.push({ sid: item.sid, reason: 'seq_conflict' });
+            say('1 session skipped: the server already has a different copy of it');
             await persist(ctx, (st) => {
               const prev = conflictRecord(st.skipped[item.sid]);
               st.skipped[item.sid] = { reason: 'seq_conflict', key, seen: prev && extendsKey(prev.key, key) ? 2 : 1 };
@@ -474,6 +496,8 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
             });
           } else if (c.kind === 'permanent') {
             log(`session ${item.sid} skipped: ${c.reason}`);
+            skipped.push({ sid: item.sid, reason: c.reason });
+            say(`1 session skipped: ${String(c.reason).replace(/_/g, ' ')}`);
             await persist(ctx, (st) => {
               st.skipped[item.sid] = { reason: c.reason, permanent: true };
               if (c.reason === 'session_deleted') delete st.cursors[item.sid];
@@ -504,7 +528,7 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
   if (waiting.length) {
     await persist(ctx, (st) => { for (const item of waiting) if (!st.queue.some((q) => q.sid === item.sid)) queueItem(st, item); });
   }
-  return { pushed, queued: waiting.length, failed };
+  return { pushed, queued: waiting.length, failed, skipped };
 }
 
 // Pending auto-share jobs are retried first. Only the ones that went through are removed, so a share another uploader added is kept.
@@ -550,17 +574,17 @@ async function flushShares({ client, creds, ctx, explicit = false }) {
 
 export async function pushFromLog({
   logPath, logText, home = homedir(), env = process.env, cloud, project = '', sessionId = '', forks,
-  sleep, maxWaitMs, timeoutMs, onProgress,
+  sleep, maxWaitMs, timeoutMs, onProgress, notify, status, pace,
   log = (m) => process.stderr.write(`${m}\n`),
 } = {}) {
   try {
-    return await upload({ logPath, logText, home, env, cloud, project, sessionId, forks, sleep, maxWaitMs, timeoutMs, log, onProgress });
+    return await upload({ logPath, logText, home, env, cloud, project, sessionId, forks, sleep, maxWaitMs, timeoutMs, log, onProgress, notify, status, pace });
   } catch {
     return { ok: false, queued: true, pushed: 0 };
   }
 }
 
-async function upload({ logPath, logText, home, env, cloud, project, sessionId, forks, sleep, maxWaitMs, timeoutMs, log, onProgress }) {
+async function upload({ logPath, logText, home, env, cloud, project, sessionId, forks, sleep, maxWaitMs, timeoutMs, log, onProgress, notify, status, pace }) {
   let raw = logText;
   if (raw == null && logPath) {
     try { raw = readFileSync(logPath, 'utf8'); } catch { return { ok: true, pushed: 0 }; }
@@ -596,11 +620,11 @@ async function upload({ logPath, logText, home, env, cloud, project, sessionId, 
   }
 
   await flushShares({ client, creds, ctx });
-  const { pushed, queued, failed } = await deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, onProgress, full: new Map(projected.map((x) => [x.sid, x])) });
+  const { pushed, queued, failed, skipped } = await deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, onProgress, notify, status, pace, full: new Map(projected.map((x) => [x.sid, x])) });
   await flushShares({ client, creds, ctx, explicit: true });
   // turns waiting and shares waiting are separate: a leftover share must not read as turns that did not go up
   const sharesPending = readState(home, scope).shares.length;
-  return { ok: queued === 0 && !sharesPending, queued: queued > 0, sharesPending, pushed, queuedCount: queued, failed };
+  return { ok: queued === 0 && !sharesPending, queued: queued > 0, sharesPending, pushed, queuedCount: queued, failed, skipped };
 }
 
 /** Stop-hook path. It does not throw when the network is down. */
