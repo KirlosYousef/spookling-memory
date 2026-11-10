@@ -291,7 +291,7 @@ The team commands are explained under [Team memory](#team-memory), `update` unde
 - **Past sessions.** If it finds sessions in this project's or your home `.memory/log.jsonl` that were never uploaded, it asks whether to upload them privately. The default is yes, and with no terminal it takes yes after 20 seconds. Other projects upload when their next session stops. A failed upload never fails the login.
 - **Where the token goes.** It talks to the Spookling app (`https://api.spookling.com`) and saves the token in `~/.spookling/credentials.json` (mode `0600`) together with the server that issued it. The token only ever goes to that server (see [Advanced](#advanced)) and is never printed.
 - **The sign-in link** is opened only when it is on the API's host or a `spookling.com` host; on another host it asks first (default No) at a terminal, and is only printed with a warning when there is none.
-- **Afterwards.** `spookling whoami` prints your name and email, the API URL and the default org. If the API cannot be reached, commands say `Couldn't reach <url>`.
+- **Afterwards.** `spookling whoami` prints your name and email, the API URL and your orgs, asked of the API just now (never from a cache). If the API cannot be reached, commands say `Couldn't reach <url>`.
 
 You need Node 18 or newer and Claude Code v2.1.139 or later. The server runs on uv, which fetches Python 3.12 if you do not have it.
 
@@ -442,6 +442,10 @@ spookling delete --all [--yes]          # delete all of yours, in batches
 - **`/spookling-share [org]`.** A slash command that `init` writes to `.claude/commands/spookling-share.md` (or your Claude config folder with `--scope user`). Typing it is your confirmation, so it shares the current session without a dialog.
 - **`spookling share [id] [--org X] [--last] [--yes]`.** With no id it takes the current session (the one a terminal inside Claude Code runs in, else the newest in this project, else your newest upload). It asks first unless `--yes`, and prints the session's web link when it can build one. `--last` is the same as leaving the id out.
 - **The Share button** in the web app.
+
+**Orgs are always checked live.** The default org is saved with the API and account it was chosen under; if either changes (a new login, another API such as a local one), the default and the cached team feed (`~/.spookling/team-feed.json`, which also records its API and user) are ignored, and `login` and `logout` delete the old feed. When you share, the default is checked against your live orgs: if it is gone, Spookling says so, uses your only org, or (with several) asks you to pick. `spookling share` names the org it picked, shows a picker in a terminal when you have several and gave no `--org`, and needs `--org` without a terminal. `spookling orgs`, `whoami` and `status` list your live orgs. For Claude, the MCP tool `team_orgs` does the same, and Claude is told never to state your orgs from memory.
+
+**No dialog in your client?** Some clients cannot show MCP confirmation dialogs. Then `memory_share` shares nothing and returns the session title, project, org (resolved live) and a command to give you, for example `spookling share <id> --org 'Org test'` (it shows what will be shared and asks you), plus `/spookling-share <org>` for the current session. Claude is told to relay it word for word and not to guess the org.
 
 **The allow rule.** `init` asks, and so does `login` (once, and only where Spookling's hooks are wired and no rule is set yet): "Let Claude share sessions to your team when you ask? Spookling still asks you to confirm each share." A yes adds four tools to `permissions.allow` in `.claude/settings.json` (or your user settings with `--scope user`): `mcp__spookling-memory__memory_share`, `memory_share_status`, `team_sessions` and `team_session`. `memory_delete` and `memory_autoshare` are never added.
 

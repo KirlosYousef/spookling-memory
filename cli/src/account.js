@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { VERSION, apiBase, clean, createCloud, isNetworkError, networkMessage } from './cloud.js';
-import { readCredentials, removeStoredToken, setDefaultOrg, writeCredentials } from './credentials.js';
+import { forgetTeamFeed, readCredentials, removeStoredToken, setDefaultOrg, writeCredentials } from './credentials.js';
 import { noteUpload } from './upload-state.js';
 import { clearLoginExpired, deletedSessionIds, pushFromLog, projectLog, uploadedCursors } from './push.js';
 import { offerAllowShare } from './allow-share.js';
@@ -287,6 +287,9 @@ async function pollApproval({ client, started, sleep, now }) {
 
 // Approved: save the token with the origin it came from, then the default org and the offer to upload past sessions. None can fail the login.
 async function finishLogin({ data, origin, client, label, home, env, cloud, cwd, term, confirm, choose, write, tty, sleep }) {
+  // a different account or API leaves its cached team feed (and default org, see writeCredentials) behind
+  const before = readCredentials({ env: {}, home });
+  if (before.savedToken && ((before.apiUrl || '') !== (origin || '') || (before.user?.id || '') !== (data.user?.id || ''))) forgetTeamFeed(home);
   writeCredentials({ token: data.token, user: data.user ?? null, label: label || hostname(), apiUrl: origin }, { home });
   try { await clearLoginExpired(home); } catch { /* a stale flag is harmless */ }
   const name = clean(data.user?.name || data.user?.email || data.user?.id);
@@ -354,7 +357,7 @@ export async function logout({
   return 0;
 }
 
-export function whoami({ home, env = process.env, write = (s) => process.stdout.write(s) } = {}) {
+export function whoami({ home, env = process.env, write = (s) => process.stdout.write(s), orgsFollow = false } = {}) {
   const creds = readCredentials({ home, env });
   let base = null;
   try { base = apiBase(env, { home }); } catch { /* the saved user is enough when no URL is stored yet */ }
@@ -367,7 +370,7 @@ export function whoami({ home, env = process.env, write = (s) => process.stdout.
     : clean([u.name, u.email].filter(Boolean).join(' ') || u.id || 'Logged in.');
   say(write, who);
   if (base) say(write, `API ${base}`);
-  say(write, `Default org ${clean(creds.defaultOrgName || creds.defaultOrgId || 'none')}`);
+  if (!orgsFollow) say(write, `Default org ${clean(creds.defaultOrgName || creds.defaultOrgId || 'none')}${creds.defaultOrgId ? ' (saved; spookling orgs checks it live)' : ''}`);
   const newer = cachedNotice({ home: home ?? undefined, current: VERSION, env });
   if (newer) say(write, `! update   ${newer} is available. Run spookling update.`);
   return 0;
@@ -375,7 +378,7 @@ export function whoami({ home, env = process.env, write = (s) => process.stdout.
 
 // The orgs this login is an active member of: GET /cli/orgs.
 export async function orgs({
-  home, env = process.env, cloud, write = (s) => process.stdout.write(s),
+  home, env = process.env, cloud, write = (s) => process.stdout.write(s), heading = false,
 } = {}) {
   const creds = readCredentials({ home, env });
   if (!creds.token) {
@@ -392,11 +395,19 @@ export async function orgs({
     return 1;
   }
   const list = orgRecords(listed);
+  if (heading) say(write, 'Orgs (checked just now):');
+  // the saved default is only kept when it is still one of these
+  const stale = creds.defaultOrgId && !list.some((o) => o.id === creds.defaultOrgId) ? (creds.defaultOrgName || creds.defaultOrgId) : creds.staleDefaultOrg;
+  if (stale) {
+    try { setDefaultOrg(null, { home }); } catch { /* the note is enough */ }
+    say(write, `Your saved default org '${clean(stale)}' is no longer one of your orgs, so it was cleared.${list.length > 1 ? ' Pick one when you share, or run spookling login to choose a default.' : ''}`);
+  }
   if (!list.length) {
-    say(write, 'You are not in an org.');
+    say(write, 'You are not in an org. Join or create one in the Spookling web app, then run spookling orgs again.');
     return 0;
   }
-  for (const o of list) say(write, `${clean(o.id)}  ${clean(o.name)}${o.id === creds.defaultOrgId ? '  (default)' : ''}`);
+  const kept = stale ? null : creds.defaultOrgId;
+  for (const o of list) say(write, `${clean(o.id)}  ${clean(o.name)}${o.id === kept ? '  (default)' : ''}`);
   return 0;
 }
 

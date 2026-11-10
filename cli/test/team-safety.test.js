@@ -111,7 +111,7 @@ test('shareTarget asks which org when it is ambiguous, and refuses an unknown or
   const home = homeOf();
   writeCredentials({ token: 'spk_x', apiUrl: 'https://x.example' }, { home });
   const cloud = fakeCloud({ orgs, sessions: mine });
-  assert.match((await shareTarget({ kind: 'session', sessionId: 'a', home, cloud })).error, /Which org/);
+  assert.match((await shareTarget({ kind: 'session', sessionId: 'a', home, cloud })).error, /several orgs/);
   assert.match((await shareTarget({ kind: 'session', sessionId: 'a', org: 'nope', home, cloud })).error, /No org matches/);
 });
 

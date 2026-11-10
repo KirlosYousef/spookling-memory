@@ -63,7 +63,7 @@ test('several orgs need a name; an unknown name is refused without a write', asy
   const orgs = [{ org: { id: 'o1', name: 'One' } }, { org: { id: 'o2', name: 'Two' } }];
   const cloud = fakeCloud({ sessions: [sess('a', 'p')], orgs });
   const h = home();
-  assert.match((await setSessionShare({ sessionId: 'a', share: true, home: h, cloud })).error, /Which org\?/);
+  assert.match((await setSessionShare({ sessionId: 'a', share: true, home: h, cloud })).error, /several orgs/);
   assert.match((await setSessionShare({ sessionId: 'a', share: true, org: 'nope', home: h, cloud })).error, /No org matches/);
   assert.equal((await setSessionShare({ sessionId: 'a', share: true, org: 'two', home: h, cloud })).ok, true);
   assert.deepEqual(cloud.calls, [['share', 'a', 'o2']]);
@@ -292,12 +292,12 @@ test('spookling share <id> --yes with an id that is not uploaded uploads it, or 
   const h = home();
   const dir = projectWithLog(h, 'new1');
   const cloud = storingCloud();
-  const share = { status: shareStatus, session: (a) => setSessionShare({ ...a, cloud }) };
+  const share = { status: shareStatus, session: (a) => setSessionShare({ ...a, cloud }), target: async (a) => (await import('../src/team.js')).shareTarget({ ...a, cloud }) };
   const up = await runCli(['share', 'new1', '--yes'], { home: h, cwd: dir, env: {}, tty: false, share });
   assert.equal(up.code, 0);
   assert.deepEqual(cloud.calls, [['share', 'new1', 'o1']]);
   const none = storingCloud();
-  const queued = await runCli(['share', 'later1', '--yes', '--org', 'Org test'], { home: h, cwd: dir, env: { SPOOKLING_SESSION_ID: 'later1' }, tty: false, share: { status: shareStatus, session: (a) => setSessionShare({ ...a, cloud: none }) } });
+  const queued = await runCli(['share', 'later1', '--yes', '--org', 'Org test'], { home: h, cwd: dir, env: { SPOOKLING_SESSION_ID: 'later1' }, tty: false, share: { status: shareStatus, session: (a) => setSessionShare({ ...a, cloud: none }), target: async (a) => (await import('../src/team.js')).shareTarget({ ...a, cloud: none }) } });
   assert.equal(queued.code, 0);
   assert.match(queued.out, /Will be shared with Org test after this session's next save/);
   assert.deepEqual(readState(h, accountScope(h)).shares.map((j) => j.sid), ['later1']);
@@ -313,7 +313,7 @@ test('a mistyped explicit id (no local log, not on the server) is an error and q
   const h = home();
   const dir = projectWithLog(h, 'real1');
   const out = await setSessionShare({ sessionId: 'typo9', share: true, projectDir: dir, home: h, env: {}, cloud: storingCloud() });
-  assert.equal(out.error, 'No session typo9 found here or in the cloud');
+  assert.match(out.error, /^No session typo9 found here or in the cloud\. Check the id/);
   assert.deepEqual(readState(h, accountScope(h)).shares, []);
 });
 

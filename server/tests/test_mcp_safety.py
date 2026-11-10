@@ -118,7 +118,8 @@ def test_autoshare_off_needs_no_confirmation_and_never_backfills(team):
 def test_a_target_error_is_returned_and_nothing_is_asked(team, monkeypatch):
     monkeypatch.setattr(M, "_team", lambda n, a: {"error": "Which org? A, B."})
     ctx = Ctx(Res("accept", True))
-    assert run(M.memory_share("sid1", True, "", ctx)) == {"error": "Which org? A, B."}
+    out = run(M.memory_share("sid1", True, "", ctx))
+    assert out["ok"] is False and out["error"] == "Which org? A, B." and out["message"].startswith("Nothing was changed.")
     assert ctx.asked == []
 
 
@@ -317,3 +318,126 @@ def test_instructions_send_a_blocked_share_to_the_cli():
     assert "memory_retrieve" in text
     assert "spookling share" in text and "/spookling-share" in text
     assert "do not retry" in text and "do not change any settings" in text
+
+
+# ---- clients with no dialog get a ready-to-run hand-off; orgs are resolved live ----
+
+@pytest.fixture
+def live_team(monkeypatch):
+    """share-target answers like the CLI: one org by default, or `needOrg` with the choices when SEVERAL is set."""
+    state = {"several": False, "note": None}
+    calls = []
+
+    def fake(name, args):
+        calls.append((name, args))
+        if name == "share-target":
+            if state["several"] and not args.get("org"):
+                return {"error": "You are in several orgs: 'One', 'Two'. Run again with --org '<name>'.", "needOrg": True,
+                        "sessionId": args.get("sessionId") or "cur1", "orgs": [{"id": "o1", "name": "One"}, {"id": "o2", "name": "Two"}]}
+            org = {"o1": "One", "o2": "Two"}.get(args.get("org"), "Org test")
+            if args["kind"] == "project":
+                return {"orgId": "o9", "orgName": "Org test", "count": 3}
+            t = {"orgId": args.get("org") if args.get("org") in ("o1", "o2") else "o9", "orgName": org, "title": "Fix it", "project": "shop", "sessionId": args.get("sessionId") or "cur1"}
+            if state["note"]:
+                t["note"] = state["note"]
+            return t
+        return {"ok": True, "name": name}
+
+    monkeypatch.setattr(M, "_team", fake)
+    return state, calls
+
+
+def test_no_dialog_returns_title_project_org_and_the_exact_command(live_team):
+    _, calls = live_team
+    for ctx in (Ctx(boom=True), None):
+        out = run(M.memory_share("sid1", True, "", ctx))
+        assert out["ok"] is False and out["needsUserConfirmation"] is True
+        assert (out["title"], out["project"], out["org"], out["sessionId"]) == ("Fix it", "shop", "Org test", "sid1")
+        assert out["command"] == "spookling share sid1 --org 'Org test'"
+        assert "--yes" not in out["command"] and "--yes" not in out["message"]
+        assert "word for word" not in out["message"] and "exactly as written" in out["message"]
+        assert "do not guess or change the org" in out["message"].lower()
+        assert "Nothing was shared" in out["message"]
+        assert "slashCommand" not in out  # an explicit id may not be the current session: /spookling-share shares the current one
+    assert acted(calls) == []
+
+
+def test_no_dialog_for_the_current_session_also_offers_the_slash_command(live_team):
+    out = run(M.memory_share("", True, "", None))
+    assert out["sessionId"] == "cur1"
+    assert out["command"] == "spookling share cur1 --org 'Org test'"
+    assert out["slashCommand"] == "/spookling-share Org test" and "/spookling-share" in out["message"]
+
+
+def test_a_dialog_still_asks_and_the_org_is_the_live_one(live_team):
+    state, calls = live_team
+    state["note"] = "Your saved default org 'Spookling' is no longer one of your orgs, so it was ignored. Using 'Org test', your only org."
+    ctx = Ctx(Res("accept", True))
+    out = run(M.memory_share("sid1", True, "Spookling", ctx))  # the model guessed an org: the live target decides
+    assert "Org test" in ctx.asked[0] and "no longer one of your orgs" in ctx.asked[0]
+    assert out["note"] == state["note"]
+    assert acted(calls) == [("share", {"sessionId": "sid1", "share": True, "org": "o9"})]
+
+
+def test_several_orgs_and_no_org_ask_in_a_dialog_and_share_only_with_the_pick(live_team):
+    state, calls = live_team
+    state["several"] = True
+
+    class Both(Ctx):
+        def __init__(self):
+            super().__init__()
+            self.answers = [Res("accept"), Res("accept", True)]
+
+        async def elicit(self, message, schema):
+            self.asked.append(message)
+            if len(self.asked) == 1:
+                return type("R", (), {"action": "accept", "data": type("D", (), {"org": "Two"})()})()
+            return self.answers[1]
+
+    ctx = Both()
+    out = run(M.memory_share("sid1", True, "", ctx))
+    assert out == {"ok": True, "name": "share"}
+    assert "Which one" in ctx.asked[0] and "Two" in ctx.asked[1]
+    assert acted(calls) == [("share", {"sessionId": "sid1", "share": True, "org": "o2"})]
+
+
+def test_several_orgs_without_a_dialog_hands_over_a_command_that_asks_which_org(live_team):
+    state, calls = live_team
+    state["several"] = True
+    out = run(M.memory_share("sid1", True, "", None))
+    assert out["ok"] is False and out["command"] == "spookling share sid1" and out["orgs"] == ["One", "Two"]
+    assert "'One', 'Two'" in out["message"] and "asks which org" in out["message"]
+    assert acted(calls) == []
+
+
+def test_a_cancelled_org_pick_shares_nothing(live_team):
+    state, calls = live_team
+    state["several"] = True
+    out = run(M.memory_share("sid1", True, "", Ctx(Res("cancel"))))
+    assert out["ok"] is False and acted(calls) == []
+
+
+def test_a_wrong_org_name_is_refused_with_the_live_orgs_and_nothing_shared(monkeypatch):
+    err = "No org matches \"Spookling\". Your orgs: 'Org test'. Name one of those orgs."
+    monkeypatch.setattr(M, "_team", lambda n, a: {"error": err})
+    out = run(M.memory_share("sid1", True, "Spookling", Ctx(Res("accept", True))))
+    assert out["ok"] is False and err in out["message"] and "do not guess" in out["message"]
+
+
+def test_autoshare_without_a_dialog_hands_over_the_command(live_team):
+    out = run(M.memory_autoshare("shop", True, "", True, None))
+    assert out["needsUserConfirmation"] is True and out["org"] == "Org test"
+    assert out["command"] == "spookling autoshare shop on --org 'Org test' --backfill"
+
+
+def test_instructions_require_a_live_org_check_and_relaying_the_command():
+    text = M.server.instructions
+    assert "team_orgs" in text and "never state which orgs" in text.lower()
+    assert "word for word" in text and "do not guess or change the org" in text
+
+
+def test_team_orgs_asks_the_live_listing(monkeypatch):
+    seen = []
+    monkeypatch.setattr(M, "_team", lambda n, a: seen.append((n, a)) or {"orgs": [{"name": "Org test"}]})
+    assert M.team_orgs() == {"orgs": [{"name": "Org test"}]} and seen == [("orgs", {})]
+    assert "team_orgs" in {t.name for t in run(M.server.list_tools())}

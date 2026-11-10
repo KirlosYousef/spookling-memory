@@ -23,6 +23,7 @@ import { compareVersions, updateAvailable } from './registry.js';
 import { createRun, tilde } from './backup.js';
 import { checkToml } from './toml-check.js';
 import { readCache } from './team.js';
+import { liveOrgs } from './share.js';
 
 const WIN = process.platform === 'win32';
 const ROOT = fileURLToPath(new URL('../..', import.meta.url)).replace(/[\\/]$/, '');
@@ -1080,7 +1081,7 @@ async function uploadLines(line, home) {
   if (problems.loginExpired && readCredentials({ home }).token) line('login', 'expired, run spookling login (the last upload was refused with 401)', false);
 }
 
-export async function status(project = process.cwd(), get = stats, home = homedir(), { update = {}, noUpdate = false } = {}) {
+export async function status(project = process.cwd(), get = stats, home = homedir(), { update = {}, noUpdate = false, liveOrgs: checkOrgs = false } = {}) {
   const line = (label, text, good) => out(`   ${good ? paint(C.MINT, '✓') : paint(C.LILAC, '!')} ${label.padEnd(8)} ${text}\n`);
   const ctx = newCtx(project);
   out(`${paint(C.GHOST, 'Spookling Memory', true)}  ${paint(C.GREY, project)}\n`);
@@ -1113,6 +1114,12 @@ export async function status(project = process.cwd(), get = stats, home = homedi
   keysLine(line, project, s?.tagger);
   modelLine(line, s?.model);
   cloudLine(line, home);
+  if (checkOrgs && readCredentials({ home }).token) {
+    // asked of the API now, never from a cache or a saved default; a slow or down API only costs a few seconds
+    const live = await Promise.race([liveOrgs({ home }), new Promise((r) => { setTimeout(() => r({ error: 'timed out' }), 4000).unref(); })]).catch(() => ({ error: 'failed' }));
+    if (live.error) line('orgs', `could not check just now (${live.error}); run spookling orgs`, false);
+    else line('orgs', `${live.orgs.length ? live.orgs.map((o) => o.name + (o.default ? ' (default)' : '')).join(', ') : 'none'}; checked just now${live.note ? `. ${live.note}` : ''}`, live.orgs.length > 0);
+  }
   if (!noUpdate) {
     const v = await updateAvailable({ home, current: VERSION, ...update }).catch(() => null);
     if (v) line('update', `${v} is available. Run spookling update.`, false);

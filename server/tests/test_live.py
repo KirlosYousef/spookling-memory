@@ -63,7 +63,7 @@ def test_mcp_tools(live, tmp_path, monkeypatch):
     monkeypatch.setenv("SPOOKLING_MEMORY_URL", url)
     names = {t.name for t in asyncio.run(M.server.list_tools())}
     assert names == {"memory_retrieve", "memory_ingest", "memory_compact", "memory_reset", "memory_export",
-                     "memory_import", "memory_stats", "team_sessions", "team_session", "memory_share",
+                     "memory_import", "memory_stats", "team_sessions", "team_session", "team_orgs", "memory_share",
                      "memory_autoshare", "memory_share_status", "memory_delete"}
     conv = turns(["I drive a Toyota Corolla, nothing fancy.", "From now on, always answer in metric units."])
     assert M.memory_ingest("s1", conv, "2024-05-22T10:00:00Z") == {"logged": 4}

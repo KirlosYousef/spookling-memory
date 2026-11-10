@@ -85,8 +85,8 @@ function formatBody(out, { limit = 20 } = {}) {
     };
     return shown.map(row).join('\n') + more + rules(out.autoShare);
   }
-  if (out.pending) return out.message;
-  if (out.action) return `${out.action}${out.orgs?.length ? ` · ${out.orgs.join(', ')}` : ''}${out.sessionId ? ` · now ${tag(out)}` : ''}`;
+  if (out.pending) return out.note ? `${out.note}\n${out.message}` : out.message;
+  if (out.action) return `${out.note ? `${out.note}\n` : ''}${out.action}${out.orgs?.length ? ` · ${out.orgs.join(', ')}` : ''}${out.sessionId ? ` · now ${tag(out)}` : ''}`;
   return out.message || (out.visibility ? tag(out) : 'done');
 }
 
@@ -122,23 +122,40 @@ async function sharing(cmd, args, { fns, home, org, cwd, env }, { ask, tty }) {
   } else {
     if (rest.length > 1 || (rest[0] && args.includes('--last'))) usage(`usage: spookling ${cmd} [<session id> | --last] [--org <id or name>]${cmd === 'share' ? ' [--yes]' : ''}`);
     let sessionId = rest[0] || '';
-    const guessed = !sessionId; // an id typed by the user is its own confirmation; a guessed session is shown and asked about first
     const projectDir = cwd;
     if (!sessionId) {
       const cur = await currentSession({ home, env, projectDir, cloud: undefined });
       if (cur.error) { process.stdout.write(`${formatShare(cur)}\n`); return 1; }
       sessionId = cur.sessionId;
     }
-    if (cmd === 'share' && guessed && !args.includes('--yes')) {
-      const t = await (target.target || shareTarget)({ kind: 'session', sessionId, org: org ?? '', projectDir, home, env });
+    let orgArg = org ?? '';
+    if (cmd === 'share') {
+      const yes = args.includes('--yes');
+      const resolve = (o) => (target.target || shareTarget)({ kind: 'session', sessionId, org: o, projectDir, home, env });
+      let t = await resolve(orgArg);
+      if (t.needOrg && t.orgs?.length > 1 && !orgArg) {
+        // several orgs and none named: the user picks (never a saved default that may be stale); no terminal means --org is required
+        if (!tty) { process.stdout.write(`${formatShare(t)}\n`); return 1; }
+        if (t.note) process.stdout.write(`${t.note}\n`);
+        const list = t.orgs.map((o, i) => `  ${i + 1}) ${o.name}`).join('\n');
+        const answer = String(await ask(`You are in several orgs. Share with which one?\n${list}\nNumber or name: `)).trim();
+        const pick = t.orgs[Number(answer) - 1] || t.orgs.find((o) => o.name.toLowerCase() === answer.toLowerCase());
+        if (!pick) { process.stdout.write('No org chosen. Nothing shared. Run again and pick a number from the list.\n'); return 1; }
+        orgArg = pick.id;
+        t = await resolve(orgArg);
+      }
       if (t.error) { process.stdout.write(`${formatShare(t)}\n`); return 1; }
-      process.stdout.write(`Share session ${sessionId}\n  title:   ${t.title}\n  project: ${t.project || '-'}\n  org:     ${t.orgName}\n`
+      if (t.note && !t.needOrg) process.stdout.write(`${t.note}\n`);
+      process.stdout.write(`Share session ${sessionId}\n  title:   ${t.title}\n  project: ${t.project || '-'}\n  org:     ${t.orgName}${t.onlyOrg ? ' (your only org)' : ''}\n`
         + `${t.pending ? 'It is not saved yet: it uploads now, or is shared after its next save.\n' : ''}`);
-      if (!tty) usage('spookling share asks for confirmation and this is not a terminal. Add --yes to share without asking.');
-      const answer = String(await ask('Share? (y/N) ')).trim().toLowerCase();
-      if (answer !== 'y' && answer !== 'yes') { process.stdout.write('Not shared.\n'); return 1; }
+      if (t.orgId) orgArg = t.orgId;
+      if (!yes) {
+        if (!tty) usage('spookling share asks for confirmation and this is not a terminal. Run it in a terminal, or add --yes if the user has already said yes.');
+        const answer = String(await ask('Share? (y/N) ')).trim().toLowerCase();
+        if (answer !== 'y' && answer !== 'yes') { process.stdout.write('Not shared.\n'); return 1; }
+      }
     }
-    out = await target.session({ sessionId, share: cmd === 'share', org: org ?? '', projectDir, home, env });
+    out = await target.session({ sessionId, share: cmd === 'share', org: cmd === 'share' ? orgArg : (org ?? ''), projectDir, home, env });
     if (out.ok && !out.pending && cmd === 'share') {
       const url = webUrl(sessionId, { env, home });
       if (url) out.url = url;
@@ -234,9 +251,12 @@ async function route(args, deps) {
     case 'logout': return fns.logout({ home });
     case 'orgs': return fns.orgs({ home });
     case 'tokens': return tokensCommand(args, ctx);
-    case 'whoami':
+    case 'whoami': {
       if (!deps.whoami) await updateAvailable({ home, current: VERSION, env }).catch(() => null); // refreshes the daily cache, at most 2 s
-      return fns.whoami({ home });
+      const code = fns.whoami({ home, orgsFollow: true });
+      if (code === 0) await fns.orgs({ home, heading: true }); // live: never what an old cache or default says
+      return code;
+    }
     case 'backfill': {
       const when = flag(args, 'since', 'takes a date, like 2026-11-01');
       const since = when === undefined ? null : new Date(when);
@@ -245,7 +265,7 @@ async function route(args, deps) {
       const r = await fns.backfill({ project, home, env, since, all: args.includes('--all') });
       return r.error ? 1 : 0;
     }
-    case 'status': return fns.status(existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) ? cwd : home);
+    case 'status': return fns.status(existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) ? cwd : home, undefined, undefined, { liveOrgs: true });
     case 'uninstall': return fns.uninstall(folder, { scope, harness });
     case 'help': process.stdout.write(HELP); return 0;
     default:

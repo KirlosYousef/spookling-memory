@@ -78,7 +78,7 @@ test('a logged-out refresh command does not call the network', async () => {
 test('refresh keeps the previous cache when the network is down', async () => {
   const home = homeOf();
   const token = 'spk_refresh_offline';
-  writeCredentials({ token, user: { name: 'Ada' } }, { home });
+  writeCredentials({ token, user: { name: 'Ada' }, apiUrl: 'http://127.0.0.1:4000' }, { home });
   const previous = {
     orgId: 'org_123',
     serverTime: '2026-11-03T09:00:00Z',
@@ -157,7 +157,7 @@ test('refresh caches the feed, prunes unshared sessions, and fetches turns by na
   });
   const { port } = server.address();
   const home = homeOf();
-  writeCredentials({ token, user: { name: 'Ada' } }, { home });
+  writeCredentials({ token, user: { name: 'Ada' }, apiUrl: 'http://127.0.0.1:4000' }, { home });
   writeCache({
     orgId: 'org_123',
     serverTime: null,
@@ -209,7 +209,7 @@ test('refresh caches the feed, prunes unshared sessions, and fetches turns by na
 test('refresh keeps the caller’s own shared sessions when sharedIds omits them', async () => {
   const home = homeOf();
   const token = 'spk_own_share';
-  writeCredentials({ token, user: { id: 'me', name: 'Ada' } }, { home });
+  writeCredentials({ token, user: { id: 'me', name: 'Ada' }, apiUrl: 'http://127.0.0.1:4000' }, { home });
   const own = colleague('me:own', { title: 'Shared by me', lastTurnAt: '2026-11-02T13:50:01.000Z' });
   const kept = colleague('u2:keep', { title: 'Colleague', lastTurnAt: '2026-11-02T12:00:00.000Z', turnCount: 1 });
   const calls = [];
@@ -287,7 +287,7 @@ test('refresh keeps the caller’s own shared sessions when sharedIds omits them
 test('team tools read the cache and wrap colleague text as untrusted', async () => {
   const home = homeOf();
   const token = 'spk_tool_secret';
-  writeCredentials({ token, user: { name: 'Ada' } }, { home });
+  writeCredentials({ token, user: { name: 'Ada' }, apiUrl: 'http://127.0.0.1:4000' }, { home });
   let fetches = 0;
   const cloud = {
     getSession: async () => { fetches += 1; throw new Error('should read the cache'); },
@@ -342,7 +342,7 @@ test('team tools read the cache and wrap colleague text as untrusted', async () 
 test('team_session fetches one namespaced session when the cache has no turns', async () => {
   const home = homeOf();
   const token = 'spk_one_session';
-  writeCredentials({ token, user: { name: 'Ada' } }, { home });
+  writeCredentials({ token, user: { name: 'Ada' }, apiUrl: 'http://127.0.0.1:4000' }, { home });
   const sid = 'u2:abc';
   const seen = [];
   const cloud = {
@@ -376,7 +376,7 @@ test('team_session fetches one namespaced session when the cache has no turns', 
 test('refresh stores every org and team_sessions can filter by id or name', async () => {
   const home = homeOf();
   const token = 'spk_many_orgs';
-  writeCredentials({ token, user: { name: 'Ada' } }, { home });
+  writeCredentials({ token, user: { name: 'Ada' }, apiUrl: 'http://127.0.0.1:4000' }, { home });
   const acme = colleague('u2:abc', { title: 'Acme sync', lastTurnAt: '2026-11-03T09:00:00Z' });
   const beta = colleague('u4:beta', { ownerName: 'Bea', title: 'Beta plan', project: 'web', lastTurnAt: '2026-11-03T12:00:00Z', turnCount: 1 });
   beta.sharedWith = ['org_beta'];
@@ -466,7 +466,7 @@ test('refresh stores every org and team_sessions can filter by id or name', asyn
 test('refresh fetches a colleague session that sharedIds names and the since window omitted', async () => {
   const home = homeOf();
   const token = 'spk_late_share';
-  writeCredentials({ token, user: { id: 'me', name: 'Ada' } }, { home });
+  writeCredentials({ token, user: { id: 'me', name: 'Ada' }, apiUrl: 'http://127.0.0.1:4000' }, { home });
   const cached = colleague('u2:old', {
     title: 'Already cached', lastTurnAt: '2026-11-02T18:00:00.000Z', turnCount: 1,
   });

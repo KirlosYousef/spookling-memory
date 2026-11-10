@@ -1,7 +1,7 @@
 // stdin-free argv bridge so the local MCP server can call the team tools without HTTP.
 import { shareTarget, teamSession, teamSessions } from './team.js';
 import { deleteAllSessions, deleteSession } from './delete.js';
-import { setProjectAutoShare, setSessionShare, shareStatus } from './share.js';
+import { liveOrgs, setProjectAutoShare, setSessionShare, shareStatus } from './share.js';
 
 const name = process.argv[2];
 let args = {};
@@ -9,6 +9,7 @@ try { args = JSON.parse(process.argv[3] || '{}'); } catch { args = {}; }
 const tools = {
   sessions: teamSessions,
   session: teamSession,
+  orgs: liveOrgs,
   'share-status': shareStatus,
   'share-target': shareTarget,
   share: setSessionShare,

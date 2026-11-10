@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpHome } from './helpers.mjs';
 import { CloudError, isNetworkError, networkMessage } from '../src/cloud.js';
-import { readCredentials, writeCredentials } from '../src/credentials.js';
+import { readCredentials, setDefaultOrg, writeCredentials } from '../src/credentials.js';
 import { login, logout, orgs, whoami } from '../src/account.js';
 import { setProjectAutoShare, setSessionShare, shareStatus } from '../src/share.js';
 import { refresh } from '../src/team.js';
@@ -224,10 +224,15 @@ test('whoami prints name, email, API and default org; logged out exits 1', () =>
   out = '';
   assert.equal(whoami({ home, env: {}, write: (s) => { out += s; } }), 0);
   assert.equal(out, 'Ada ada@x.com\nAPI https://api.test\nDefault org none\n');
+  setDefaultOrg({ id: 'o1', name: 'Acme' }, { home });
+  out = '';
+  whoami({ home, env: {}, write: (s) => { out += s; } });
+  assert.match(out, /Default org Acme \(saved/);
+  // a default saved without the API and account it was chosen for (an older file) cannot be trusted
   writeFileSync(join(home, '.spookling', 'credentials.json'), JSON.stringify({ token: 't', user: { name: 'Ada', email: 'ada@x.com' }, defaultOrgId: 'o1', defaultOrgName: 'Acme' }));
   out = '';
   whoami({ home, env: {}, write: (s) => { out += s; } });
-  assert.match(out, /Default org Acme\n$/);
+  assert.match(out, /Default org none\n$/);
 });
 
 test('logout, orgs, refresh and share say the API is unreachable', async () => {
@@ -265,8 +270,7 @@ test('--org defaults to the saved default org for share and autoshare on', async
     listAutoShare: async () => ({ rules: [] }),
   };
   const noDefault = await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud });
-  assert.match(noDefault.error, /Which org\? Acme, Beta\./);
-  const { setDefaultOrg } = await import('../src/credentials.js');
+  assert.match(noDefault.error, /several orgs: 'Acme', 'Beta'/);
   setDefaultOrg({ id: 'o2', name: 'Beta' }, { home });
   await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud });
   await setProjectAutoShare({ project: 'p', enabled: true, env: {}, home, cloud });
@@ -277,7 +281,7 @@ test('--org defaults to the saved default org for share and autoshare on', async
   await setSessionShare({ sessionId: 's', share: false, env: {}, home, cloud });
   assert.deepEqual(shared.sort(), ['un s>o1', 'un s>o2'], 'unshare without --org still covers every org');
   setDefaultOrg({ id: 'gone', name: 'Gone' }, { home });
-  assert.match((await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud })).error, /Which org\?/, 'a stale default is ignored');
+  assert.match((await setSessionShare({ sessionId: 's', share: true, env: {}, home, cloud })).error, /several orgs/, 'a stale default is ignored');
 });
 
 const capture = async (fn) => {

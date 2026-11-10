@@ -5,11 +5,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { CloudError, apiBase, clean, createCloud, networkMessage } from './cloud.js';
-import { readCredentials } from './credentials.js';
+import { readCredentials, setDefaultOrg } from './credentials.js';
 import { pushFromLog, projectLog, sessionTitle } from './push.js';
 import { accountScope, readState, takeShareFailures, updateState } from './upload-state.js';
 
-const NOT_LOGGED_IN = 'Not logged in. Run spookling login first.';
+const NOT_LOGGED_IN = 'Not logged in. Run `spookling login`, then try again.';
 
 export function client(env, home, cloud) {
   if (cloud) return { cloud, error: null };
@@ -18,21 +18,21 @@ export function client(env, home, cloud) {
     apiBase(env, { home });
     return { cloud: createCloud({ env, home }), error: null };
   } catch (e) {
-    return { cloud: null, error: clean(e?.message) || 'No usable API URL.' };
+    return { cloud: null, error: clean(e?.message) || 'No usable API URL. Run `spookling login` to set one.' };
   }
 }
 
 export function explain(e, env, home) {
   const net = networkMessage(e, { env, home });
   if (net) return net;
-  if (!(e instanceof CloudError)) return 'Could not reach the Spookling API.';
-  if (e.status === 401) return 'The saved login was rejected. Run spookling login again.';
-  if (e.status === 403 && e.reason === 'org_owned') return 'That session is shared with an org and now belongs to it, so it cannot be deleted from here.';
-  if (e.status === 410) return 'That session was already deleted; it cannot be changed.';
-  if (e.status === 403) return 'Not allowed: you must be an active member of that org.';
-  if (e.status === 404) return 'The server does not know that session or org yet.';
-  if (e.status === 429) return 'Rate limited. Try again in a moment.';
-  return e.code ? `The API refused it (${clean(e.code)}).` : 'Could not reach the Spookling API.';
+  if (!(e instanceof CloudError)) return 'Could not reach the Spookling API. Check your connection and try again.';
+  if (e.status === 401) return 'The saved login was rejected. Run `spookling login` to sign in again.';
+  if (e.status === 403 && e.reason === 'org_owned') return 'That session is shared with an org and now belongs to it, so it cannot be deleted from here. Ask an org admin to remove it.';
+  if (e.status === 410) return 'That session was deleted from the cloud, so it cannot be changed. Pick another session.';
+  if (e.status === 403) return 'You are not an active member of that org. Run `spookling orgs` to see your orgs, then use one of them.';
+  if (e.status === 404) return 'The server does not know that session or org yet. Run `spookling orgs` to check the org, or try again after the session saves.';
+  if (e.status === 429) return 'Rate limited. Wait a minute, then try again.';
+  return e.code ? `The API refused it (${clean(e.code)}). Try again; if it keeps failing, run \`spookling status\`.` : 'Could not reach the Spookling API. Check your connection and try again.';
 }
 
 async function orgsOf(cloud, token) {
@@ -45,18 +45,63 @@ async function orgsOf(cloud, token) {
     .map((o) => ({ id: o.id, name: o.name || o.id }));
 }
 
-// One org: the default. Several: the caller must name one. "org" is an id or a case-insensitive name.
-// With no name, the saved default org wins when it is still one of yours; a stale default is ignored.
-export function pickOrg(orgs, wanted, defaultId = null) {
+const NO_ORG = 'You are not an active member of any org, so there is nobody to share with. Join or create an org in the Spookling web app, then try again.';
+const names = (orgs) => orgs.map((o) => `'${clean(o.name)}'`).join(', ');
+
+/**
+ * Which org a share goes to. "wanted" is an id or a case-insensitive name. With no name: the saved default when it is still one of
+ * yours, else your only org, else the caller must ask (needOrg, with the choices). Never guesses between several.
+ * { org, note? } or { error, needOrg?, orgs? }. A note says something the user should know (a default that no longer applies).
+ */
+export function pickOrg(orgs, wanted, defaultId = null, { stale = '' } = {}) {
   let w = typeof wanted === 'string' ? wanted.trim().toLowerCase() : '';
-  if (!w && defaultId && orgs.some((o) => o.id === defaultId)) w = defaultId.toLowerCase();
+  const gone = !!defaultId && !orgs.some((o) => o.id === defaultId);
+  const was = stale || (gone ? defaultId : '');
+  const note = !w && was ? `Your saved default org '${clean(was)}' is no longer one of your orgs, so it was ignored.` : '';
+  if (!w && defaultId && !gone) w = defaultId.toLowerCase();
   if (w) {
     const hit = orgs.find((o) => o.id.toLowerCase() === w || o.name.toLowerCase() === w);
-    return hit ? { org: hit } : { error: `No org matches "${wanted}". Your orgs: ${orgs.map((o) => o.name).join(', ') || 'none'}.` };
+    return hit ? { org: hit } : { error: `No org matches "${clean(wanted)}". Your orgs: ${names(orgs) || 'none'}. Name one of those orgs.`, needOrg: orgs.length > 1, orgs };
   }
-  if (orgs.length === 1) return { org: orgs[0] };
-  if (!orgs.length) return { error: 'You are not an active member of any org.' };
-  return { error: `Which org? ${orgs.map((o) => o.name).join(', ')}.` };
+  if (orgs.length === 1) return { org: orgs[0], only: true, ...(note ? { note: `${note} Using '${clean(orgs[0].name)}', your only org.` } : {}) };
+  if (!orgs.length) return { error: NO_ORG };
+  return { error: `You are in several orgs: ${names(orgs)}. Run again with --org '<name>'.${note ? ` ${note}` : ''}`, needOrg: true, orgs, ...(note ? { note } : {}) };
+}
+
+/** The saved default org, checked against the live list. A default that no longer applies is cleared and reported. */
+function checkedDefault(creds, orgs, home) {
+  if (creds.defaultOrgId && orgs.some((o) => o.id === creds.defaultOrgId)) return { id: creds.defaultOrgId, stale: '' };
+  const was = creds.defaultOrgId ? (creds.defaultOrgName || creds.defaultOrgId) : creds.staleDefaultOrg;
+  if (!was) return { id: null, stale: '' };
+  try { setDefaultOrg(null, { home }); } catch { /* a stale default is ignored either way */ }
+  return { id: null, stale: clean(was) };
+}
+
+/** pickOrg against the live list, with the saved default checked first. */
+export function pickLiveOrg(orgs, wanted, creds, home) {
+  const d = checkedDefault(creds, orgs, home);
+  return pickOrg(orgs, wanted, d.id, { stale: d.stale });
+}
+
+/** The orgs this login belongs to right now (asks the API), for `spookling orgs`, whoami, status and the team_orgs tool. */
+export async function liveOrgs({ env = process.env, home = homedir(), cloud: injected } = {}) {
+  const { cloud, error } = client(env, home, injected);
+  if (error) return { error };
+  const creds = readCredentials({ env, home });
+  try {
+    const orgs = await orgsOf(cloud, creds.token);
+    const d = checkedDefault(creds, orgs, home);
+    let api = ''; try { api = apiBase(env, { home }); } catch { /* none */ }
+    return {
+      api, user: creds.user?.name || creds.user?.email || creds.user?.id || '',
+      orgs: orgs.map((o) => ({ id: o.id, name: clean(o.name), default: o.id === d.id })),
+      defaultOrg: d.id ? clean(orgs.find((o) => o.id === d.id).name) : null,
+      ...(d.stale ? { note: `Your saved default org '${d.stale}' is no longer one of your orgs, so it was cleared.` } : {}),
+      message: orgs.length ? `You are an active member of ${orgs.length === 1 ? '1 org' : `${orgs.length} orgs`}, checked just now.` : NO_ORG,
+    };
+  } catch (e) {
+    return { error: explain(e, env, home) };
+  }
 }
 
 // ---- the session a share is about, when the caller did not name one ----
@@ -164,7 +209,7 @@ export async function currentSession({ env = process.env, home = homedir(), proj
   } catch (e) {
     return { error: explain(e, env, home) };
   }
-  return { error: 'No session found here. Run this inside a project with a Spookling session, or give a session id.' };
+  return { error: 'No session found here. Run this inside a project that has a Spookling session, or give a session id (`spookling sessions` lists them).' };
 }
 
 // ---- explicit shares queued until the session is on the server ----
@@ -268,6 +313,7 @@ export async function setSessionShare({ sessionId, share, org, projectDir = proc
   try {
     const orgs = await orgsOf(cloud, token);
     let targets;
+    let note = '';
     const onServer = async () => (await allMine(cloud, token)).find((s) => s.clientId === sessionId);
     if (!share && !org) {
       const mine = await onServer();
@@ -278,9 +324,10 @@ export async function setSessionShare({ sessionId, share, org, projectDir = proc
       }
       targets = (mine.sharedWith || []).map((id) => orgs.find((o) => o.id === id) || { id, name: id });
     } else {
-      const picked = pickOrg(orgs, org, share ? creds.defaultOrgId : null);
-      if (picked.error) return { error: picked.error };
+      const picked = share ? pickLiveOrg(orgs, org, creds, home) : pickOrg(orgs, org);
+      if (picked.error) return { error: picked.error, ...(picked.needOrg ? { needOrg: true, orgs: picked.orgs } : {}) };
       targets = [picked.org];
+      note = picked.note || '';
       if (!share) {
         const dropped = await dropQueued(home, env, sessionId, picked.org.id);
         if (dropped && !(await onServer())) return { ok: true, action: 'unshared', sessionId, visibility: 'not uploaded', message: 'Cancelled the pending share.' };
@@ -301,7 +348,7 @@ export async function setSessionShare({ sessionId, share, org, projectDir = proc
         }
       }
       // an id the user typed that is in no local log and not on the server is a typo: queueing it would wait forever
-      if (!mine && explicitId && !localSession(sessionId, { projectDir, home, env })) return { error: `No session ${sessionId} found here or in the cloud` };
+      if (!mine && explicitId && !localSession(sessionId, { projectDir, home, env })) return { error: `No session ${sessionId} found here or in the cloud. Check the id (it is printed as "Spookling session"), or share the current session without an id.` };
       if (!mine) {
         const o = targets[0];
         await queueShare(home, env, { sid: sessionId, project, orgId: o.id, org: o.name, title: localSession(sessionId, { projectDir, home, env })?.title || sessionId });
@@ -312,7 +359,7 @@ export async function setSessionShare({ sessionId, share, org, projectDir = proc
         const o = targets[0];
         return {
           ok: true, pending: true, action: 'share pending', sessionId, orgs: [o.name], visibility: 'share pending',
-          message: `Will be shared with ${o.name} after this session's next save.`,
+          message: `Will be shared with ${o.name} after this session's next save.`, ...(note ? { note } : {}),
         };
       }
     }
@@ -321,7 +368,7 @@ export async function setSessionShare({ sessionId, share, org, projectDir = proc
       else await cloud.unshareSession({ sid: sessionId, orgId: o.id, token });
     }
     const after = await shareStatus({ sessionId, env, home, cloud });
-    return { ok: true, action: share ? 'shared' : 'unshared', orgs: targets.map((o) => o.name), ...after };
+    return { ok: true, action: share ? 'shared' : 'unshared', orgs: targets.map((o) => o.name), ...(note ? { note } : {}), ...after };
   } catch (e) {
     return { error: explain(e, env, home) };
   }
@@ -338,20 +385,22 @@ export async function setProjectAutoShare({ project, enabled, org, backfill = fa
   try {
     const orgs = await orgsOf(cloud, token);
     let targets;
+    let note = '';
     if (!enabled && !org) {
       const rules = await cloud.listAutoShare({ token });
       targets = (rules?.rules || []).filter((r) => r.project === project).map((r) => orgs.find((o) => o.id === r.orgId) || { id: r.orgId, name: r.orgId });
       if (!targets.length) return { ok: true, project, autoShare: [], message: `No auto-share rule for ${project}.` };
     } else {
-      const picked = pickOrg(orgs, org, enabled ? creds.defaultOrgId : null);
-      if (picked.error) return { error: picked.error };
+      const picked = enabled ? pickLiveOrg(orgs, org, creds, home) : pickOrg(orgs, org);
+      if (picked.error) return { error: picked.error, ...(picked.needOrg ? { needOrg: true, orgs: picked.orgs } : {}) };
       targets = [picked.org];
+      note = picked.note || '';
     }
     for (const o of targets) {
       if (enabled) await cloud.setAutoShare({ project, orgId: o.id, backfill: !!backfill, token });
       else await cloud.clearAutoShare({ project, orgId: o.id, token });
     }
-    return { ok: true, project, action: enabled ? 'auto-share on' : 'auto-share off', orgs: targets.map((o) => o.name), backfill: enabled ? !!backfill : undefined };
+    return { ok: true, project, action: enabled ? 'auto-share on' : 'auto-share off', orgs: targets.map((o) => o.name), backfill: enabled ? !!backfill : undefined, ...(note ? { note } : {}) };
   } catch (e) {
     return { error: explain(e, env, home) };
   }

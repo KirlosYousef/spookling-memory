@@ -23,18 +23,33 @@ function savedApiUrl(file) {
   return typeof file?.apiUrl === 'string' && file.apiUrl.trim() ? file.apiUrl.trim().replace(/\/+$/, '') : null;
 }
 
+// The default org is only meaningful for the API and the account it was chosen under, so it is saved with both.
+const userIdOf = (file) => (typeof file?.user?.id === 'string' ? file.user.id : '');
+const orgScope = (file) => ({ api: savedApiUrl(file) || '', user: userIdOf(file) });
+
+/** The saved default org, or null when it is not provably for the saved API and account (older files, another login, SPOOKLING_TOKEN). */
+function validDefaultOrg(file, fromEnv) {
+  if (fromEnv || typeof file?.defaultOrgId !== 'string' || !file.defaultOrgId) return null;
+  const now = orgScope(file);
+  const at = file.defaultOrgAt;
+  if (!at || typeof at !== 'object' || at.api !== now.api || at.user !== now.user) return null;
+  return { id: file.defaultOrgId, name: typeof file.defaultOrgName === 'string' && file.defaultOrgName ? file.defaultOrgName : null };
+}
+
 /** The token in use, and the saved user. `fromEnv` means SPOOKLING_TOKEN won over the file. `apiUrl` is only the file. */
 export function readCredentials({ env = process.env, home = homedir() } = {}) {
   const file = readFile(home);
   const fromEnv = typeof env.SPOOKLING_TOKEN === 'string' && env.SPOOKLING_TOKEN.length > 0;
+  const def = validDefaultOrg(file, fromEnv);
   return {
     token: fromEnv ? env.SPOOKLING_TOKEN : (file?.token || null),
     savedToken: file?.token || null,
     user: file?.user ?? null,
     label: file?.label ?? null,
     apiUrl: savedApiUrl(file),
-    defaultOrgId: typeof file?.defaultOrgId === 'string' && file.defaultOrgId ? file.defaultOrgId : null,
-    defaultOrgName: typeof file?.defaultOrgName === 'string' && file.defaultOrgName ? file.defaultOrgName : null,
+    defaultOrgId: def?.id ?? null,
+    defaultOrgName: def?.name ?? null,
+    staleDefaultOrg: !def && !fromEnv && typeof file?.defaultOrgId === 'string' && !!file.defaultOrgId ? (file.defaultOrgName || file.defaultOrgId) : null,
     path: credentialsFile(home),
     fromEnv,
   };
@@ -92,9 +107,14 @@ export function writeCredentials({ token, user = null, label = null, apiUrl }, {
   const prev = readFile(home) || {};
   const incoming = apiUrl === undefined ? prev.apiUrl : apiUrl;
   const next = { token, user, label };
-  if (prev.defaultOrgId) { next.defaultOrgId = prev.defaultOrgId; if (prev.defaultOrgName) next.defaultOrgName = prev.defaultOrgName; }
   const url = savedApiUrl({ apiUrl: incoming });
   if (url) next.apiUrl = url;
+  // a default org carries over only to the same API and account; another login starts without one
+  if (prev.defaultOrgId && validDefaultOrg(prev, false) && orgScope(prev).api === orgScope(next).api && orgScope(prev).user === orgScope(next).user) {
+    next.defaultOrgId = prev.defaultOrgId;
+    if (prev.defaultOrgName) next.defaultOrgName = prev.defaultOrgName;
+    next.defaultOrgAt = prev.defaultOrgAt;
+  }
   const body = JSON.stringify(next, null, 2) + '\n';
   writeFileSecure(path, body);
   protect(path);
@@ -105,21 +125,28 @@ export function writeCredentials({ token, user = null, label = null, apiUrl }, {
 export function setDefaultOrg(org, { home = homedir() } = {}) {
   const file = readFile(home);
   if (!file) return false;
-  if (org?.id) { file.defaultOrgId = org.id; file.defaultOrgName = org.name || org.id; } else { delete file.defaultOrgId; delete file.defaultOrgName; }
+  if (org?.id) { file.defaultOrgId = org.id; file.defaultOrgName = org.name || org.id; file.defaultOrgAt = orgScope(file); } else { delete file.defaultOrgId; delete file.defaultOrgName; delete file.defaultOrgAt; }
   const path = credentialsFile(home);
   writeFileSecure(path, JSON.stringify(file, null, 2) + '\n');
   protect(path);
   return true;
 }
 
+/** The cached team feed belongs to one account on one API: remove it (a missing file is fine). */
+export function forgetTeamFeed(home = homedir()) {
+  try { unlinkSync(join(home, '.spookling', 'team-feed.json')); } catch { /* none */ }
+}
+
 /** Drop the saved token. A SPOOKLING_TOKEN in the environment is left for the caller to unset. */
 export function removeStoredToken(home = homedir()) {
   const path = credentialsFile(home);
   const file = readFile(home);
+  forgetTeamFeed(home);
   if (!file) return;
   delete file.token;
   delete file.defaultOrgId;
   delete file.defaultOrgName;
+  delete file.defaultOrgAt;
   if (!file.user && !file.label && !savedApiUrl(file)) {
     try { unlinkSync(path); } catch { /* already gone */ }
     return;
