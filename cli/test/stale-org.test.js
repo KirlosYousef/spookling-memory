@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpHome } from './helpers.mjs';
 import { readCredentials, removeStoredToken, setDefaultOrg, writeCredentials } from '../src/credentials.js';
-import { liveOrgs, pickLiveOrg, pickOrg, setSessionShare } from '../src/share.js';
+import { liveOrgs, pickLiveOrg, pickOrg, setProjectAutoShare, setSessionShare } from '../src/share.js';
 import { cachePath, readCache, shareTarget, writeCache } from '../src/team.js';
 import { login, orgs } from '../src/account.js';
 import { main } from '../src/main.js';
@@ -235,4 +235,30 @@ test('a typed session id is confirmed too: asked in a terminal, refused (exit 2)
   assert.equal(code, 2);
   assert.deepEqual(cloud.calls, []);
   assert.equal(r.code, 2);
+});
+
+test('spookling autoshare on: picker with several orgs, --org needed without a terminal, says the org it used', async () => {
+  const rules = [];
+  const mk = (list) => ({ ...cloudOf(list), setAutoShare: async (a) => { rules.push(`${a.project}>${a.orgId}`); } });
+  const deps = (cloud, extra) => ({ cwd: '/', env: {}, share: { status: async () => ({}), project: (a) => setProjectAutoShare({ ...a, cloud }), target: (a) => shareTarget({ ...a, cloud }) }, ...extra });
+  const h = home(), cloud = mk([ORG('o1', 'One'), ORG('o2', 'Two')]);
+  const q = [];
+  const r = await runCli(['autoshare', 'p', 'on'], deps(cloud, { home: h, tty: true, ask: async (x) => { q.push(x); return '2'; } }));
+  assert.equal(r.code, 0);
+  assert.match(q[0], /1\) One\n  2\) Two/);
+  assert.match(r.out, /Auto-share p with Two/);
+  assert.deepEqual(rules, ['p>o2']);
+  rules.length = 0;
+  const nt = await runCli(['autoshare', 'p', 'on'], deps(cloud, { home: h, tty: false, ask: async () => { throw new Error('asked'); } }));
+  assert.equal(nt.code, 1);
+  assert.match(nt.out, /several orgs: 'One', 'Two'\. Run again with --org/);
+  // a stale default is never used
+  const h2 = home();
+  setDefaultOrg({ id: 'gone', name: 'Gone' }, { home: h2 });
+  assert.equal((await runCli(['autoshare', 'p', 'on'], deps(cloud, { home: h2, tty: false }))).code, 1);
+  assert.deepEqual(rules, []);
+  // one org: used and named
+  const one = await runCli(['autoshare', 'p', 'on'], deps(mk([ORG('o1', 'Solo')]), { home: home(), tty: false }));
+  assert.match(one.out, /Auto-share p with Solo \(your only org\)/);
+  assert.deepEqual(rules, ['p>o1']);
 });

@@ -488,7 +488,6 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
             // the note first: anything that sees the state change can then rely on the note being there
             log(known && extendsKey(known.key, key) ? `session ${item.sid} skipped: seq_conflict` : `session ${item.sid} seq_conflict; retrying on the next Stop`);
             skipped.push({ sid: item.sid, reason: 'seq_conflict' });
-            say('1 session skipped: the server already has a different copy of it');
             await persist(ctx, (st) => {
               const prev = conflictRecord(st.skipped[item.sid]);
               st.skipped[item.sid] = { reason: 'seq_conflict', key, seen: prev && extendsKey(prev.key, key) ? 2 : 1 };
@@ -497,7 +496,6 @@ async function deliverAll({ client, creds, items, ctx, sleep, maxWaitMs, full, o
           } else if (c.kind === 'permanent') {
             log(`session ${item.sid} skipped: ${c.reason}`);
             skipped.push({ sid: item.sid, reason: c.reason });
-            say(`1 session skipped: ${String(c.reason).replace(/_/g, ' ')}`);
             await persist(ctx, (st) => {
               st.skipped[item.sid] = { reason: c.reason, permanent: true };
               if (c.reason === 'session_deleted') delete st.cursors[item.sid];

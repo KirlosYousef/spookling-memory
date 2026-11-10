@@ -383,3 +383,13 @@ test('the refresh command flushes after pulling the feeds', async () => {
   assert.equal(r.code, 0);
   assert.equal(flushed, 1);
 });
+
+test('help lists every command in the routing table', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+  const sw = src.slice(src.indexOf('switch (cmd) {'));
+  const cmds = [...new Set([...sw.matchAll(/case '([a-z]+)':/g)].map((m) => m[1]))];
+  assert.ok(cmds.length >= 18, cmds.join());
+  const { out } = await runCli(['help'], {});
+  for (const c of cmds) assert.ok(out.includes(`spookling ${c}`), `help is missing ${c}`);
+});

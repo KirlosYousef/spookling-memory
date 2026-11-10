@@ -146,6 +146,18 @@ test('past sessions: asked, uploaded privately, counted; already uploaded ones a
   assert.match(r.out, /Looked in .*app[\\/]\.memory[\\/]log\.jsonl and ~[\\/]\.memory[\\/]log\.jsonl\. Other projects upload when their next session stops\./);
 });
 
+test('several skipped sessions are one summary line; per-session detail goes to upload.log', async () => {
+  const home = homeOf();
+  writeLog(home, 's1', 's2', 's3');
+  const cloud = { ...fake(), upsertSession: async () => { throw new CloudError('conflict', { status: 409, code: 'SEQ_CONFLICT', reason: 'seq_conflict' }); } };
+  const r = await run(home, { confirm: async () => true }, cloud);
+  assert.equal(r.code, 0);
+  assert.equal((r.out.match(/skipped/g) || []).length, 1, r.out);
+  assert.match(r.out, /Uploaded 0 sessions privately\.\n3 sessions skipped: the server already has a different copy of them\n/);
+  const log = readFileSync(join(home, '.spookling', 'upload.log'), 'utf8');
+  for (const id of ['s1', 's2', 's3']) assert.match(log, new RegExp(`session ${id} .*seq_conflict`));
+});
+
 test('declining the backfill uploads nothing', async () => {
   const home = homeOf();
   writeLog(home, 's1');

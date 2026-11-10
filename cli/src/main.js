@@ -26,6 +26,7 @@ const HELP = `Spookling Memory
   spookling backfill [--since <date>] [--all]   log turns the memory is missing from your Claude Code transcripts (idempotent; this project, or every project with --all)
   spookling status          is the server up, which harness is wired (project and user files)
   spookling uninstall       remove the hooks and MCP entry, keep .memory/
+  spookling help            this list (also -h, --help)
   spookling login           sign in, pick a default org, offer to upload past sessions (init does not do this)
   spookling logout          forget the saved token
   spookling whoami          who the saved login is, its API and default org
@@ -42,7 +43,8 @@ const HELP = `Spookling Memory
   spookling delete <session id> [--yes]   delete one uploaded session from the cloud (local memory is kept; asks first)
   spookling delete --all [--yes]          delete all your uploaded sessions from the cloud (type DELETE to confirm)
 
-  --org: share and autoshare on use your default org if you did not name one, else your only org;
+  --org: share and autoshare on use your only org, or your saved default if it is still one of yours; with several orgs
+         and no --org they ask which one at a terminal and need --org otherwise;
          unshare, autoshare off and refresh without --org cover every org
 
   --scope project   init/uninstall: project harness files (.codex/hooks.json for Codex), the default
@@ -107,6 +109,22 @@ const operands = (args, valued = ['org', 'limit']) => args.slice(1).filter((a, i
 // commands that talk to the API with the saved login: a different SPOOKLING_API_URL is called out before they run
 const AUTHENTICATED = new Set(['logout', 'whoami', 'orgs', 'tokens', 'refresh', 'sessions', 'share', 'unshare', 'autoshare', 'delete']);
 
+// several orgs and none named: the user picks (never a saved default that may be stale); no terminal means --org is required
+async function resolveOrg(resolve, orgArg, { ask, tty }, verb) {
+  let t = await resolve(orgArg);
+  if (t.needOrg && t.orgs?.length > 1 && !orgArg) {
+    if (!tty) { process.stdout.write(`${formatShare(t)}\n`); return { stop: true }; }
+    if (t.note) process.stdout.write(`${t.note}\n`);
+    const list = t.orgs.map((o, i) => `  ${i + 1}) ${o.name}`).join('\n');
+    const answer = String(await ask(`You are in several orgs. ${verb}\n${list}\nNumber or name: `)).trim();
+    const pick = t.orgs[Number(answer) - 1] || t.orgs.find((o) => o.name.toLowerCase() === answer.toLowerCase());
+    if (!pick) { process.stdout.write('No org chosen. Nothing changed. Run again and pick a number from the list.\n'); return { stop: true }; }
+    orgArg = pick.id;
+    t = await resolve(orgArg);
+  }
+  return { t, orgArg };
+}
+
 // sessions, share, unshare, autoshare: who can see your own sessions
 async function sharing(cmd, args, { fns, home, org, cwd, env }, { ask, tty }) {
   const limitArg = flag(args, 'limit', 'takes a whole number of 1 or more');
@@ -118,7 +136,18 @@ async function sharing(cmd, args, { fns, home, org, cwd, env }, { ask, tty }) {
   if (cmd === 'sessions') out = await target.status({ project: rest[0], home });
   else if (cmd === 'autoshare') {
     if (!rest[0] || !['on', 'off'].includes(rest[1])) usage('usage: spookling autoshare <project> on|off [--org <id or name>] [--backfill]');
-    out = await target.project({ project: rest[0], enabled: rest[1] === 'on', org: org ?? '', backfill: args.includes('--backfill'), home });
+    let orgArg = org ?? '';
+    const enabled = rest[1] === 'on';
+    if (enabled) {
+      const resolve = (o) => (target.target || shareTarget)({ kind: 'project', project: rest[0], org: o, home, env });
+      const r = await resolveOrg(resolve, orgArg, { ask, tty }, 'Turn on auto-share for which one?');
+      if (r.stop) return 1;
+      if (r.t.error) { process.stdout.write(`${formatShare(r.t)}\n`); return 1; }
+      if (r.t.note && !r.t.needOrg) process.stdout.write(`${r.t.note}\n`);
+      process.stdout.write(`Auto-share ${rest[0]} with ${r.t.orgName}${r.t.onlyOrg ? ' (your only org)' : ''}\n`);
+      orgArg = r.t.orgId || r.orgArg;
+    }
+    out = await target.project({ project: rest[0], enabled, org: orgArg, backfill: args.includes('--backfill'), home });
   } else {
     if (rest.length > 1 || (rest[0] && args.includes('--last'))) usage(`usage: spookling ${cmd} [<session id> | --last] [--org <id or name>]${cmd === 'share' ? ' [--yes]' : ''}`);
     let sessionId = rest[0] || '';
@@ -132,18 +161,10 @@ async function sharing(cmd, args, { fns, home, org, cwd, env }, { ask, tty }) {
     if (cmd === 'share') {
       const yes = args.includes('--yes');
       const resolve = (o) => (target.target || shareTarget)({ kind: 'session', sessionId, org: o, projectDir, home, env });
-      let t = await resolve(orgArg);
-      if (t.needOrg && t.orgs?.length > 1 && !orgArg) {
-        // several orgs and none named: the user picks (never a saved default that may be stale); no terminal means --org is required
-        if (!tty) { process.stdout.write(`${formatShare(t)}\n`); return 1; }
-        if (t.note) process.stdout.write(`${t.note}\n`);
-        const list = t.orgs.map((o, i) => `  ${i + 1}) ${o.name}`).join('\n');
-        const answer = String(await ask(`You are in several orgs. Share with which one?\n${list}\nNumber or name: `)).trim();
-        const pick = t.orgs[Number(answer) - 1] || t.orgs.find((o) => o.name.toLowerCase() === answer.toLowerCase());
-        if (!pick) { process.stdout.write('No org chosen. Nothing shared. Run again and pick a number from the list.\n'); return 1; }
-        orgArg = pick.id;
-        t = await resolve(orgArg);
-      }
+      const r = await resolveOrg(resolve, orgArg, { ask, tty }, 'Share with which one?');
+      if (r.stop) return 1;
+      let t = r.t;
+      orgArg = r.orgArg;
       if (t.error) { process.stdout.write(`${formatShare(t)}\n`); return 1; }
       if (t.note && !t.needOrg) process.stdout.write(`${t.note}\n`);
       process.stdout.write(`Share session ${sessionId}\n  title:   ${t.title}\n  project: ${t.project || '-'}\n  org:     ${t.orgName}${t.onlyOrg ? ' (your only org)' : ''}\n`

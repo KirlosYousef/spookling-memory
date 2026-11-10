@@ -193,9 +193,15 @@ async function backfill({ home, cwd, env, cloud, write, confirm, tty = false, sl
         skipped.push(...(r.skipped || []));
       }
     });
-    const labels = [...new Set(skipped.map((k) => (k.reason === 'seq_conflict' ? 'conflict' : String(k.reason).replace(/_/g, ' '))))];
-    const skipNote = skipped.length ? ` ${skipped.length} skipped (${labels.join(', ')}).` : '';
-    say(write, `Uploaded ${pushed} ${pushed === 1 ? 'session' : 'sessions'} privately.${skipNote}`);
+    // one line for all skipped sessions (per-session detail is in ~/.spookling/upload.log), grouped by reason
+    const byReason = new Map();
+    for (const k of skipped) byReason.set(k.reason, (byReason.get(k.reason) || 0) + 1);
+    const sk = (reason, c) => (reason === 'seq_conflict'
+      ? `${c} ${c === 1 ? 'session' : 'sessions'} skipped: the server already has a different copy of ${c === 1 ? 'it' : 'them'}`
+      : `${c} ${c === 1 ? 'session' : 'sessions'} skipped: ${String(reason).replace(/_/g, ' ')}`);
+    const skipLines = [...byReason].map(([r, c]) => sk(r, c));
+    say(write, `Uploaded ${pushed} ${pushed === 1 ? 'session' : 'sessions'} privately.`);
+    for (const l of skipLines) say(write, l);
     if (queued) {
       // the uploader stops at the first refusal and leaves the rest queued, so count tried and untried apart, and name each distinct reason
       const reasons = [...new Set(failed.map((f) => f.why))];
