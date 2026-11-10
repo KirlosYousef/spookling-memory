@@ -91,7 +91,11 @@ export function addHooks(settings, handlers) {
 }
 
 // permissions.allow rules for the share tools. Other rules, and the other keys of permissions, are never touched.
-export const SHARE_TOOLS = ['memory_share', 'memory_share_status', 'team_sessions', 'team_session'].map((t) => `mcp__${MCP_NAME}__${t}`);
+// All read-only (or, for memory_share, confirmed by Spookling per share). memory_delete and memory_autoshare are never listed.
+const rule = (t) => `mcp__${MCP_NAME}__${t}`;
+export const SHARE_TOOLS = ['memory_share', 'memory_share_status', 'team_sessions', 'team_session', 'team_orgs'].map(rule);
+// Rules added to SHARE_TOOLS after the first release: someone who accepted the earlier list gets just these, without a new question.
+export const LATER_SHARE_TOOLS = ['team_orgs'].map(rule);
 function checkPerms(settings) {
   if (!isObj(settings)) throw new Error('settings.json is not a JSON object');
   const p = settings.permissions;

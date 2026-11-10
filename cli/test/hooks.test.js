@@ -236,8 +236,8 @@ test('a server folder inside WSL, seen from Windows, runs through wsl.exe, never
 // ---- share permissions and the /spookling-share command
 import { addPermissions, removePermissions, hasPermissions, SHARE_TOOLS, shareCommand, isOurShareCommand, commandsPath } from '../src/hooks.js';
 
-test('addPermissions adds exactly the four share tools, once, and keeps every other rule and key', () => {
-  assert.deepEqual(SHARE_TOOLS, ['memory_share', 'memory_share_status', 'team_sessions', 'team_session'].map((t) => `mcp__spookling-memory__${t}`));
+test('addPermissions adds exactly the five share tools, once, and keeps every other rule and key', () => {
+  assert.deepEqual(SHARE_TOOLS, ['memory_share', 'memory_share_status', 'team_sessions', 'team_session', 'team_orgs'].map((t) => `mcp__spookling-memory__${t}`));
   assert.ok(!SHARE_TOOLS.some((t) => /delete|autoshare/.test(t)));
   const s = { model: 'opus', permissions: { allow: ['Bash(ls:*)'], deny: ['Read(./.env)'], defaultMode: 'plan' } };
   const a = addPermissions(s);
@@ -252,7 +252,7 @@ test('addPermissions adds exactly the four share tools, once, and keeps every ot
   assert.ok(hasPermissions(a) && !hasPermissions(s) && !hasPermissions({}));
 });
 
-test('removePermissions drops only our four entries and tidies only what it emptied', () => {
+test('removePermissions drops only our five entries and tidies only what it emptied', () => {
   const s = { permissions: { allow: ['Bash(ls:*)', ...SHARE_TOOLS, 'mcp__spookling-memory__memory_delete'], deny: ['x'] } };
   assert.deepEqual(removePermissions(s).permissions, { allow: ['Bash(ls:*)', 'mcp__spookling-memory__memory_delete'], deny: ['x'] });
   assert.deepEqual(removePermissions(addPermissions({})), {}, 'nothing of ours left behind');

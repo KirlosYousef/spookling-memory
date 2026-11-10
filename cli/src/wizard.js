@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { C, DOWN, MODE, UP, askHidden, bail, choose, confirm, fits, paint, press, setFeed, setRaw, sleep, write as out } from './term.js';
 import { play } from './cutscene.js';
 import { flyOnce } from './ghost.js';
-import { ALLOW_SHARE_QUESTION, forgetAdded, recordAdded, addedRules, setShareDeclined, shareDeclined } from './allow-share.js';
+import { ALLOW_SHARE_QUESTION, forgetAdded, pendingShareRules, recordAdded, addedRules, setShareDeclined, shareDeclined } from './allow-share.js';
 import { stage } from './stage.js';
 import {
   HOOK_FILES, MCP_NAME, addHooks, addMcp, addPermissions, claudeDesktopConfigPath, commandsPath, hasPermissions, isOurShareCommand, removePermissions, shareCommand, SHARE_TOOLS, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
@@ -851,11 +851,21 @@ async function stepWire(ctx) {
   }
 }
 
-// Let Claude call the four share tools without Claude Code blocking them. Each share is still confirmed by Spookling.
+// Let Claude call the five share tools without Claude Code blocking them. Each share is still confirmed by Spookling.
 // --allow-share / --no-allow-share decide without asking. With no flag: init asks (a terminal only); update asks only
 // at a terminal and only if the answer was never "no" before. Anything else leaves the settings alone.
 async function stepAllowShare(ctx, sp) {
   const flag = ctx.auto ? ctx.auto.allowShare : ctx.allowShare;
+  // an earlier yes (recorded in share-allow.json) covers tools added since: add only those, no question
+  const later = ctx.dry || flag === false ? [] : pendingShareRules(sp, homeOf(ctx));
+  if (later.length) {
+    await mergeFile(ctx, sp, (s) => addPermissions(s, later), {
+      what: 'permissions.allow: the new Spookling tool you already allowed the others of',
+      preview: `"permissions": { "allow": ${JSON.stringify(later)} }`,
+      same: `${rel(ctx, sp)} already lets Claude use the share tools`,
+    });
+    try { if (readJson(sp).permissions?.allow?.includes(later[0])) recordAdded(sp, later, homeOf(ctx)); } catch { /* the note is best effort */ }
+  }
   let have = false;
   try { have = !ctx.dry && hasPermissions(readJson(sp)); } catch { /* mergeFile reports an unreadable file */ }
   if (have) return ok(`${rel(ctx, sp)} already lets Claude use the share tools`);

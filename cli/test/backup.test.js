@@ -229,7 +229,7 @@ test('a Codex config.toml that is not valid TOML is refused and left as it was; 
   assert.equal(readFileSync(join(t.home, '.spookling', 'backups', stamp, encodeName(t.file)), 'utf8'), fine);
 });
 
-test('init --allow-share adds the four share tools and /spookling-share; no flag or --no-allow-share adds neither tool; uninstall removes ours only', posix, async () => {
+test('init --allow-share adds the five share tools and /spookling-share; no flag or --no-allow-share adds neither tool; uninstall removes ours only', posix, async () => {
   const { existsSync } = await import('node:fs');
   const { SHARE_TOOLS } = await import('../src/hooks.js');
   const cmd = (home) => join(home, '.claude', 'commands', 'spookling-share.md');
@@ -272,6 +272,33 @@ test('uninstall keeps a share rule the user had before init, and removes only th
   r = await sandbox(['uninstall', '--scope', 'user'], { home, project });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.deepEqual(JSON.parse(readFileSync(claudeSettings(home), 'utf8')).permissions.allow, ['Bash(git status)', SHARE_TOOLS[0]]);
+});
+
+test('update and init --update add only the new team_orgs rule for a recorded yes; a no stays a no; uninstall removes it', posix, async () => {
+  const { SHARE_TOOLS } = await import('../src/hooks.js');
+  const old = SHARE_TOOLS.slice(0, 4), added = SHARE_TOOLS[4];
+  const home = tmp('spk-sb-'), project = tmp('spk-sbp-');
+  let r = await sandbox(['init', '--scope', 'user', '--no-ghost', '--no-anim', '--allow-share'], { home, project, files: { '.claude/settings.json': THEIRS } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  // go back to what the previous release wrote
+  const f = claudeSettings(home), rec = join(home, '.spookling', 'share-allow.json');
+  let s = JSON.parse(readFileSync(f, 'utf8'));
+  s.permissions.allow = [...THEIRS.permissions.allow, ...old];
+  writeFileSync(f, JSON.stringify(s));
+  const j = JSON.parse(readFileSync(rec, 'utf8')); j.added[f] = old; writeFileSync(rec, JSON.stringify(j));
+  r = await sandbox(['init', '--update'], { home, project });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(f, 'utf8')).permissions.allow, [...THEIRS.permissions.allow, ...old, added]);
+  assert.deepEqual(JSON.parse(readFileSync(rec, 'utf8')).added[f], SHARE_TOOLS);
+  r = await sandbox(['uninstall', '--scope', 'user'], { home, project });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(f, 'utf8')).permissions.allow, THEIRS.permissions.allow);
+  // a decline (nothing recorded) gets nothing, and the file is not touched
+  const h2 = tmp('spk-sb-'), p2 = tmp('spk-sbp-');
+  r = await sandbox(['init', '--scope', 'user', '--no-ghost', '--no-anim', '--no-allow-share'], { home: h2, project: p2, files: { '.claude/settings.json': THEIRS } });
+  r = await sandbox(['init', '--update'], { home: h2, project: p2 });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(claudeSettings(h2), 'utf8')).permissions, THEIRS.permissions);
 });
 
 test('a spookling-share.md the user wrote is never overwritten or removed; --allow-share with --no-allow-share is refused', posix, async () => {
