@@ -517,27 +517,55 @@ function processCommand(pid, run = spawnSync) {
 const OUR_SERVER = /spookling-memory[\\/]([^\\/\s"']+)[\\/]server\b[\s\S]*\bserve\b/;
 export const serverVersion = (cmd) => OUR_SERVER.exec(String(cmd ?? ''))?.[1] ?? null;
 
+/** The pid listening on 127.0.0.1:port, or null. POSIX only (lsof); Windows relies on the pid file. */
+function portListener(port, run = spawnSync) {
+  if (WIN) return null;
+  const r = run('lsof', ['-nP', `-iTCP:${Number(port)}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8', timeout: 5000 });
+  const pid = Number(String(r?.stdout || '').trim().split(/\s+/)[0]);
+  return r?.status === 0 && pid > 0 ? pid : null;
+}
+
+/** The working folder of a process, or null. The server's --folder .memory is relative to it, so a restart goes there. */
+function processCwd(pid, run = spawnSync) {
+  if (WIN) return null;
+  const r = run('lsof', ['-a', '-p', String(Number(pid)), '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout: 5000 });
+  const line = String(r?.stdout || '').split('\n').find((l) => l.startsWith('n'));
+  return r?.status === 0 && line ? line.slice(1) || null : null;
+}
+
 // A server from an older version folder is stopped, like uninstall does, and the new one is started in the same folder.
-// A pid file that points at anything else is left alone.
+// A pid file that points at anything else is left alone. A server with no pid file, or a stale one (started by hand,
+// or its pid file overwritten), is found by the port it listens on, so an update never keeps an old server answering.
 export async function stopOldServers(ctx) {
   const a = ctx.auto, home = a.home || homedir();
   const dirs = [...new Set([ctx.project, home, ...(a.knownProjects || [])].map((d) => resolve(d)))];
+  const stop = async (pid, v, dir) => {
+    info(`stopping the memory server from ${v} (pid ${pid})`);
+    if (!(a.stop || stopServer)(pid)) { warn(`could not stop pid ${pid}`); await fail(ctx, `the old server (pid ${pid}) is still running`); return false; }
+    const gone = () => !(a.alive || pidAlive)(pid);
+    for (let i = 0; i < 50 && !gone(); i++) await (a.pause || sleep)(200);
+    if (!gone()) { warn(`pid ${pid} is still shutting down`); await fail(ctx, `the old server (pid ${pid}) did not stop`); return false; }
+    rmSync(pidFile(dir), { force: true });
+    ctx.serverHome = dir;
+    a.start = true;
+    ok(`stopped pid ${pid}`);
+    return true;
+  };
   for (const dir of dirs) {
     const p = readPid(dir);
     if (!p?.alive) continue;
     const v = serverVersion((a.ps || processCommand)(p.pid));
     if (!v) { info(`pid ${p.pid} in ${rel(ctx, pidFile(dir))} is not a Spookling server of ours; left alone`); continue; }
     if (v === VERSION) continue;
-    info(`stopping the memory server from ${v} (pid ${p.pid})`);
-    if (!(a.stop || stopServer)(p.pid)) { warn(`could not stop pid ${p.pid}`); await fail(ctx, `the old server (pid ${p.pid}) is still running`); continue; }
-    const gone = () => !(a.alive || pidAlive)(p.pid);
-    for (let i = 0; i < 50 && !gone(); i++) await (a.pause || sleep)(200);
-    if (!gone()) { warn(`pid ${p.pid} is still shutting down`); await fail(ctx, `the old server (pid ${p.pid}) did not stop`); continue; }
-    rmSync(pidFile(dir), { force: true });
-    ctx.serverHome = dir;
-    a.start = true;
-    ok(`stopped pid ${p.pid}`);
+    await stop(p.pid, v, dir);
   }
+  const pid = (a.listener || portListener)(PORT);
+  if (!pid || !(a.alive || pidAlive)(pid)) return;
+  const v = serverVersion((a.ps || processCommand)(pid));
+  if (!v || v === VERSION) return; // not ours, or already current: left alone
+  const dir = (a.cwd || processCwd)(pid);
+  if (!dir) { warn(`the memory server on 127.0.0.1:${PORT} is from ${v} (pid ${pid}), and its folder could not be read`); await fail(ctx, `stop pid ${pid}, then run spookling update again`); return; }
+  await stop(pid, v, resolve(dir));
 }
 
 /**
@@ -597,7 +625,7 @@ export function staleWiring(project = process.cwd(), home = homedir()) {
 }
 
 // `init --update`: no cutscene, no prompts, works without a TTY. Returns the exit code.
-export async function initUpdate({ project = process.cwd(), home = homedir(), probe = stats, ps, stop, alive, pause, find = detectInstall, withStatus = true, allowShare } = {}) {
+export async function initUpdate({ project = process.cwd(), home = homedir(), probe = stats, ps, stop, alive, pause, listener, cwd, find = detectInstall, withStatus = true, allowShare } = {}) {
   out(`${paint(C.GHOST, `Updating Spookling Memory to ${VERSION}`, true)}  ${paint(C.GREY, project)}\n`);
   const { targets, elsewhere, live } = await find({ project, home, probe });
   if (elsewhere.length) info(`Other projects with a project-scope install: ${elsewhere.join(', ')}. Run spookling update in each.`);
@@ -608,7 +636,7 @@ export async function initUpdate({ project = process.cwd(), home = homedir(), pr
     return 1;
   }
   const run = createRun(home);
-  const shared = { home, ps, stop, alive, pause, step4Done: false, knownProjects: elsewhere, allowShare };
+  const shared = { home, ps, stop, alive, pause, listener, cwd, step4Done: false, knownProjects: elsewhere, allowShare };
   let code = 0;
   for (const t of targets) {
     out(`\n   ${paint(C.GHOST, `${t.harness === 'claude' ? 'Claude Code' : 'Codex'}, ${t.scope} scope`)}${t.scope === 'project' ? paint(C.GREY, `  ${t.project}`) : ''}\n`);

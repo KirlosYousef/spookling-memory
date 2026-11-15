@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `spookling update` also finds an old memory server by the port it listens on (macOS and Linux), so one with no pid file, or a stale one, no longer keeps answering after an update. It is restarted in the folder it ran from; if that folder cannot be read, the update says which pid to stop.
 - A turn now keeps up to 30,000 characters (it was 16,000) before it is cut, and the backend accepts up to 32,000. Uploads are sent in batches of at most 200 turns or about 500,000 characters, so long turns stay under the API's request size.
 
 ## 0.2.2 (10 Nov 2026)
