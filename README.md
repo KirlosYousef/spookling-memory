@@ -247,7 +247,7 @@ In Codex, the pixel ghost shows in the hook messages: `ready` after a successful
 
 Spookling Memory is out as `spookling` 0.2.2, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
 
-New in 0.2.1: turns are saved before any model is called, so a tagger key that runs out or stops working no longer loses a chat ([When the tagger key stops working](#when-the-tagger-key-stops-working)); every assistant reply in a turn is logged, not only the last one; turns can be up to 16,000 characters; `spookling backfill` puts back turns missing from `.memory/`; and `spookling delete` (or `memory_delete` from chat) removes uploaded sessions from the cloud.
+New in 0.2.1: turns are saved before any model is called, so a tagger key that runs out or stops working no longer loses a chat ([When the tagger key stops working](#when-the-tagger-key-stops-working)); every assistant reply in a turn is logged, not only the last one; turns can be up to 30,000 characters; `spookling backfill` puts back turns missing from `.memory/`; and `spookling delete` (or `memory_delete` from chat) removes uploaded sessions from the cloud.
 
 New in 0.2.2: sharing is easier. `spookling share` with no id shares the current session; a session that has not uploaded yet is uploaded on demand or queued as a pending share; `spookling unshare` cancels it; org lists are read live; `spookling refresh` also retries queued uploads and shares; and `init` can let Claude share for you through an allow rule for five share tools. See [Team memory](#team-memory).
 
@@ -417,7 +417,7 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 **Upload.** Once you are logged in, each Stop hook uploads the finished session to the Spookling app, named after its git repo.
 
 - **Private:** only you can see it until you share it.
-- **What goes up:** the cleaned turns from `.memory/log.jsonl`, cut to 16,000 characters each (a cut ends with "…"), with secrets masked first. `log.jsonl` itself is not changed.
+- **What goes up:** the cleaned turns from `.memory/log.jsonl`, cut to 30,000 characters each (a cut ends with "…"), with secrets masked first. `log.jsonl` itself is not changed.
 - **What is masked:** API keys, AWS key IDs, GitHub tokens, `NAME_TOKEN=value` lines, JWTs, PEM private-key blocks, `scheme://user:pass@` URLs, Slack tokens, Stripe keys. This is pattern matching, so a secret in another shape still gets through.
 - **Network down:** the turns wait in `~/.spookling/upload-state.json` and go up on a later Stop. Upload progress is remembered per account and server, so switching either starts cleanly; if the server holds fewer turns than expected, the client asks it where it is and resends from there.
 - **Refused for good:** that session is skipped and the rest still upload. This covers one shared with an org you have since left (`org_owned`), one past the 10,000-turn limit, and one over the 10,000-session account limit (which also pauses creating new sessions for that push). `spookling status` names them.

@@ -15,7 +15,7 @@ CAP = 10_000  # Claude Code's cap, in UTF-16 units; a longer value reaches Claud
 OURS = re.compile(r"<(invariant|recalled-data|memory-index|kept-before-compaction)\b.*?</\1>", re.S)
 COMMAND = ("<command-", "<local-command-")  # slash-command wrappers and their output
 MNT = Path("/mnt")  # WSL's default automount root
-TURN_CAP = 16000  # the backend takes 20,000 characters a turn (MAX_TURN_TEXT); the client sends at most TURN_CAP + 2 (" …") of them
+TURN_CAP = 30000  # the backend takes 32,000 characters a turn (MAX_TURN_TEXT); the client sends at most TURN_CAP + 2 (" …") of them
 PULSE = "x-spookling-pulse"  # a hook call's counts as JSON, for the status line; the body stays what Claude Code reads
 LOG = logging.getLogger("uvicorn.error")  # uvicorn's, so it lands in .memory/server.log
 

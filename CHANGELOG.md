@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A turn now keeps up to 30,000 characters (it was 16,000) before it is cut, and the backend accepts up to 32,000. Uploads are sent in batches of at most 200 turns or about 500,000 characters, so long turns stay under the API's request size.
+
 ## 0.2.2 (10 Nov 2026)
 
 ### Sharing

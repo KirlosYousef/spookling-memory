@@ -3,11 +3,11 @@
 // cli/test/fixtures/secret-vectors.json, so the two cannot drift. Change one, change the other.
 const MASK = '[secret]';
 
-// A turn is cut to 16000 characters before it leaves, so only that much plus a margin is ever masked. Some patterns
+// A turn is cut to 30000 characters before it leaves, so only that much plus a margin is ever masked. Some patterns
 // rescan a long run from each start (quadratic in the worst case); this bound makes that a few million steps at most.
-// The backend refuses a turn over 20,000 characters (MAX_TURN_TEXT in team-memory-service.ts). A turn is cut at TURN_CAP and ends
+// The backend refuses a turn over 32,000 characters (MAX_TURN_TEXT in team-memory-service.ts). A turn is cut at TURN_CAP and ends
 // with "…" (one character); the server's local copy keeps up to TURN_CAP + 2 (it ends " …"), so it never keeps less than is sent.
-export const TURN_CAP = 16000;
+export const TURN_CAP = 30000;
 export const MASK_INPUT_MAX = TURN_CAP + 256;
 
 // the \b[\w.-]{0,40} prefix and suffix are bounded so a long "a.a.a." run cannot make the keyword search quadratic
