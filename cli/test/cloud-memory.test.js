@@ -110,10 +110,28 @@ test('cloudRetrieve: sends the contract request with the pinned token, answers c
     assert.equal(req.body.sessionId, 's1');
     assert.match(req.body.projectKey, /^dir:spk-work-/);
     assert.ok(Number.isFinite(Date.parse(req.body.clientTs)));
-    assert.deepEqual(shownIds(home, 's1'), ['m1']);
+    assert.deepEqual(shownIds(home, 's1'), ['s|m1']);
     // another question in the same session carries what was shown
     await cloudRetrieve({ question: 'And what about the invoice numbering scheme?', cwd, sessionId: 's1', home, env: {} });
-    assert.deepEqual(api.seen[1].body.shownIds, ['m1']);
+    assert.deepEqual(api.seen[1].body.shownIds, ['s|m1']);
+  } finally { await api.close(); }
+});
+
+test('cloudRetrieve: shown ids are scoped to their space and never exceed what the API accepts (200)', async () => {
+  // two spaces both have an f1: seeing one must not hide the other, and more than 200 ids is a 400 for every later prompt
+  let call = 0;
+  const api = await fakeApi(() => { call++; return ok({ items: Array.from({ length: 120 }, (_, i) => ({ id: `f${i}`, spaceId: (i + call) % 2 ? 'org/o/dir:x' : 'user/u/dir:x', sid: 'x', seq: i })) }); });
+  try {
+    const home = cloudHome({ api: api.url }), cwd = workdir();
+    await cloudRetrieve({ question: QUESTION, cwd, sessionId: 's9', home, env: {} });
+    await cloudRetrieve({ question: 'A second, different question about invoices?', cwd, sessionId: 's9', home, env: {} });
+    await cloudRetrieve({ question: 'A third, different question about refunds?', cwd, sessionId: 's9', home, env: {} });
+    const sent = api.seen[2].body.shownIds;
+    assert.ok(shownIds(home, 's9').length > 200, 'the local record keeps more than the API takes');
+    assert.equal(sent.length, 200);
+    assert.ok(sent.every((i) => /^(user|org)\/[uo]\/dir:x\|f\d+$/.test(i)));
+    const both = shownIds(home, 's9').filter((i) => i.endsWith('|f1'));
+    assert.deepEqual(both.sort(), ['org/o/dir:x|f1', 'user/u/dir:x|f1']); // the same bare id in two spaces stays two entries
   } finally { await api.close(); }
 });
 

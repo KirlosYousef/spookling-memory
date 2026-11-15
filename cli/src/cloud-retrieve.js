@@ -14,6 +14,9 @@ export const DEFAULT_BUDGET_MS = 1800;
 export const ASK_BUDGET_MS = 4000; // a tool call the model chose to make: the user is already waiting for it
 export const CACHE_TTL_MS = 60_000;
 const SHOWN_SESSIONS_MAX = 50, SHOWN_IDS_MAX = 500, CACHE_MAX = 40;
+// The API accepts at most 200 shownIds per request, each at most 200 characters (routes/memory.ts retrieveSchema): more is a 400
+// and every later prompt of the session would silently fall back to the local engine.
+const SEND_IDS_MAX = 200, SEND_ID_CHARS = 200;
 const stateDir = (home) => join(home, '.spookling');
 
 // ---- which mode: the install config says cloud (SPOOKLING_MODE=cloud|local overrides it), and there is a login
@@ -137,7 +140,9 @@ function withBudget(work, ms) {
 }
 
 const budgetFrom = (env, def) => { const n = Number(env.SPOOKLING_CLOUD_BUDGET_MS); return Number.isFinite(n) && n > 0 ? n : def; };
-const ids = (items) => (Array.isArray(items) ? items.map((i) => i?.id).filter((i) => typeof i === 'string') : []);
+// Item ids are local to a space (every space has an f1 and an m1), so with two spaces asked a bare id would hide another space's item.
+// The engine reads `<spaceId>|<id>` as "this space only".
+const ids = (items) => (Array.isArray(items) ? items.map((i) => (typeof i?.id === 'string' && typeof i.spaceId === 'string' && i.spaceId && !i.spaceId.includes('|') ? `${i.spaceId}|${i.id}` : i?.id)).filter((i) => typeof i === 'string') : []);
 
 /**
  * Ask the cloud what memory holds for a question. Returns { context, items, tier, status, spaces, paused, cached } when the cloud
@@ -160,7 +165,7 @@ export async function cloudRetrieve({
       if (hit) return { ...hit, cached: true };
       const client = cloud ?? createCloud({ env, home, ...(fetchImpl && { fetchImpl }) });
       const left = Math.max(50, budget - (Date.now() - started));
-      const seen = sessionId ? shownIds(home, sessionId) : [];
+      const seen = (sessionId ? shownIds(home, sessionId) : []).filter((i) => i.length <= SEND_ID_CHARS).slice(-SEND_IDS_MAX);
       const body = { mode, question, ...(id.projectKey && { projectKey: id.projectKey }), ...(id.repoUrl && { repoUrl: id.repoUrl }),
         ...(id.project && { project: id.project }), ...(sessionId && { sessionId }), ...(seen.length && { shownIds: seen }), clientTs: new Date(now()).toISOString() };
       const data = await client.retrieve({ body, timeoutMs: left });
