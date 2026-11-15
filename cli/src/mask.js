@@ -3,11 +3,11 @@
 // cli/test/fixtures/secret-vectors.json, so the two cannot drift. Change one, change the other.
 const MASK = '[secret]';
 
-// A turn is cut to 16000 characters before it leaves, so only that much plus a margin is ever masked. Some patterns
+// A turn is cut to 30000 characters before it leaves, so only that much plus a margin is ever masked. Some patterns
 // rescan a long run from each start (quadratic in the worst case); this bound makes that a few million steps at most.
-// The backend refuses a turn over 20,000 characters (MAX_TURN_TEXT in team-memory-service.ts). A turn is cut at TURN_CAP and ends
+// The backend refuses a turn over 32,000 characters (MAX_TURN_TEXT in team-memory-service.ts). A turn is cut at TURN_CAP and ends
 // with "…" (one character); the server's local copy keeps up to TURN_CAP + 2 (it ends " …"), so it never keeps less than is sent.
-export const TURN_CAP = 16000;
+export const TURN_CAP = 30000;
 export const MASK_INPUT_MAX = TURN_CAP + 256;
 
 // the \b[\w.-]{0,40} prefix and suffix are bounded so a long "a.a.a." run cannot make the keyword search quadratic
@@ -21,7 +21,7 @@ const PATTERNS = [
   [/\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, MASK], // JWT: header.payload.signature
   [/\b([a-z][a-z0-9+.-]{0,20}:\/\/)[^\s:/@]+:[^\s/]+@/gi, `$1${MASK}@`], // scheme://user:pass@host; pass runs to the last @
   [/([?&](?:token|access_token|api[_-]?key|key|password|secret|sig|signature)=)[^&\s#]+/gi, `$1${MASK}`],
-  [/(\bcurl\b[^\n]*?\s-u\s+)\S+:\S+/gi, `$1${MASK}`], // curl -u user:pass
+  [/(\bcurl\b[^\n]{0,500}?\s-u\s+)\S+:\S+/gi, `$1${MASK}`], // curl -u user:pass (-u within 500 characters of curl, so a long run of "curl" is not rescanned to the end of the line from each one)
   [/\b(?:sk-[A-Za-z0-9_-]{20,}|A[KS]IA[A-Z0-9]{16}|gh[pousr]_[A-Za-z0-9]{30,})\b/g, MASK], // OpenAI and Anthropic, AWS, GitHub
   [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, MASK],
   [/\bglpat-[A-Za-z0-9_-]{20,}/g, MASK],

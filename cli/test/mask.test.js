@@ -59,7 +59,7 @@ test('mask caps its input, and maskTurn cuts to the turn cap after masking', () 
 test('maskTurn keeps a long turn whole, cuts a longer one with a visible …, and leaves a turn the log already cut', () => {
   const plan = 'word '.repeat(1000).trim(); // 4,999 characters: the old cap cut it
   assert.equal(maskTurn(plan), plan);
-  const big = 'word '.repeat(5000).trim();
+  const big = 'word '.repeat(9000).trim();
   const cut = maskTurn(big);
   assert.ok(cut.length <= TURN_CAP + 1 && cut.endsWith('…') && big.startsWith(cut.slice(0, -1)));
   const local = `${'word '.repeat(TURN_CAP / 5 - 1).trim()} …`; // what the server keeps of a long turn: at most TURN_CAP + 2

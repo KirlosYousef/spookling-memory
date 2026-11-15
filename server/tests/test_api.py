@@ -299,7 +299,7 @@ def test_clean_drops_code_logs_json_and_caps():
     assert hooks.clean("$ uv run pytest\n>>> 1 + 1\n@@ -1,2 +1,2 @@\nINFO:     started\nreal words") == "real words"
     assert hooks.clean("Sep 24 │ Layla │ cancelled\ne26bd2f7787b3e769676d1ad8c1c11eb1da6153954ae73\nwhy?") == "why?"
     assert hooks.clean("[a link](http://x) stays") == "[a link](http://x) stays"
-    long = hooks.clean("word " * 5000)
+    long = hooks.clean("word " * 9000)
     assert len(long) <= hooks.TURN_CAP + 2 and long.endswith("word …")
 
 

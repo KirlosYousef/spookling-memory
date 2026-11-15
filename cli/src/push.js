@@ -13,6 +13,7 @@ import { SHARE_JOB_MAX_AGE_MS, StateBusy, accountScope, claimSession, noteUpload
 
 const LIST_PAGES = 20; // pages of your sessions searched for one when the server cannot be asked for it by id
 const BATCH = 200; // turns per POST: the API's page size
+const BATCH_CHARS = 500_000; // and characters per POST: 200 long turns would pass the API's request size limit
 const TITLE_MAX = 120; // the API cuts a longer title
 const PROJECT_MAX = 100; // the API refuses a longer project
 // whole blocks the tool or harness injected: nothing a person typed
@@ -279,10 +280,21 @@ async function shareToOrg(client, token, job) {
 async function sendSession(client, item, token) {
   await client.upsertSession({ sid: item.sid, session: item.session, token });
   let last = null;
-  for (let i = 0; i < item.turns.length; i += BATCH) {
-    last = await client.postTurns({ sid: item.sid, turns: item.turns.slice(i, i + BATCH), token });
+  for (const turns of batches(item.turns)) {
+    last = await client.postTurns({ sid: item.sid, turns, token });
   }
   return last;
+}
+
+// Consecutive turns, at most BATCH of them and about BATCH_CHARS characters; a turn is never split.
+export function* batches(turns) {
+  let from = 0, chars = 0;
+  for (let i = 0; i < turns.length; i += 1) {
+    const n = turns[i].text.length;
+    if (i > from && (i - from >= BATCH || chars + n > BATCH_CHARS)) { yield turns.slice(from, i); from = i; chars = 0; }
+    chars += n;
+  }
+  if (from < turns.length) yield turns.slice(from);
 }
 
 function isConflict(e) {
