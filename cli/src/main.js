@@ -10,6 +10,7 @@ import { restore } from './restore.js';
 import { backfill } from './backfill.js';
 import { login, logout, orgs, tokens, whoami } from './account.js';
 import { VERSION, clean, originWarning } from './cloud.js';
+import { installedMode } from './cloud-retrieve.js';
 import { updateAvailable } from './registry.js';
 import { refresh } from './team.js';
 import { flushQueued } from './push.js';
@@ -287,7 +288,7 @@ async function route(args, deps) {
       const r = await fns.backfill({ project, home, env, since, all: args.includes('--all') });
       return r.error ? 1 : 0;
     }
-    case 'status': return fns.status(existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) ? cwd : home, undefined, undefined, { liveOrgs: true });
+    case 'status': return fns.status(existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) || installedMode({ cwd, home }) === 'cloud' ? cwd : home, undefined, undefined, { liveOrgs: true });
     case 'uninstall': return fns.uninstall(folder, { scope, harness });
     case 'help': process.stdout.write(HELP); return 0;
     default:
