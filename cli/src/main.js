@@ -50,6 +50,7 @@ const HELP = `Spookling Memory
   --scope project   init/uninstall: project harness files (.codex/hooks.json for Codex), the default
   --scope user      init/uninstall: user harness files ($CODEX_HOME/hooks.json for Codex)
   --harness codex   uninstall: remove Codex hooks (default: claude); init asks which harness to use
+  --cloud           init: log in and use your Spookling plan, without asking (--keys: your own API keys, without asking)
   --no-ghost        init: do not ask to put the ghost in the Claude Code status line
   --allow-share     init: let Claude share sessions when you ask (adds the share tools to permissions.allow; each share is still confirmed)
   --no-allow-share  init: do not add them (without either flag, init asks at a terminal and skips it otherwise)
@@ -253,7 +254,7 @@ async function route(args, deps) {
     case 'init': {
       if (args.includes('--allow-share') && args.includes('--no-allow-share')) usage('use --allow-share or --no-allow-share, not both');
       const allowShare = args.includes('--allow-share') ? true : args.includes('--no-allow-share') ? false : undefined;
-      return args.includes('--update') ? fns.initUpdate({ project: cwd, home, allowShare }) : fns.init({ anim, scope, project: folder, ghost, allowShare });
+      return args.includes('--update') ? fns.initUpdate({ project: cwd, home, allowShare }) : fns.init({ anim, scope, project: folder, ghost, allowShare, ...(args.includes('--cloud') && { mode: 'cloud' }), ...(args.includes('--keys') && { mode: 'keys' }) });
     }
     case 'demo': {
       const n = flag(args, 'frames', 'takes a number');

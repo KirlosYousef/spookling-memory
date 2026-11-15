@@ -441,3 +441,54 @@ def test_team_orgs_asks_the_live_listing(monkeypatch):
     monkeypatch.setattr(M, "_team", lambda n, a: seen.append((n, a)) or {"orgs": [{"name": "Org test"}]})
     assert M.team_orgs() == {"orgs": [{"name": "Org test"}]} and seen == [("orgs", {})]
     assert "team_orgs" in {t.name for t in run(M.server.list_tools())}
+
+
+# ---- cloud-first memory_retrieve: the token stays in node; the local server is the fallback
+
+def test_memory_retrieve_goes_cloud_first(monkeypatch):
+    seen = []
+    monkeypatch.setattr(M, "_cloud_retrieve", lambda q: seen.append(q) or {"context": "We chose Postgres.", "tier": "strong", "status": "ok", "items": [{"id": "m1"}]})
+    monkeypatch.setattr(M, "call", lambda *a, **k: pytest.fail("the local server must not be asked while the cloud answers"))
+    out = M.memory_retrieve("which database?")
+    assert seen == ["which database?"]
+    assert out["context"] == "We chose Postgres." and out["source"] == "cloud" and out["items"] == [{"id": "m1"}]
+
+
+def test_memory_retrieve_falls_back_to_the_local_server(monkeypatch):
+    monkeypatch.setattr(M, "_cloud_retrieve", lambda q: None)
+    monkeypatch.setattr(M, "call", lambda path, body=None, raw=None: {"context": "local", "path": path, "body": body})
+    assert M.memory_retrieve("q") == {"context": "local", "path": "/v1/retrieve", "body": {"question": "q"}}
+
+
+def test_cloud_retrieve_shells_out_to_node_and_never_raises(monkeypatch, tmp_path):
+    script = tmp_path / "cloud-retrieve-invoke.js"
+    script.write_text("")
+    monkeypatch.setattr(M, "_node_script", lambda name: script)
+    monkeypatch.setattr(M.shutil, "which", lambda n: "/usr/bin/node")
+    ran = []
+
+    def fake(cmd, **kw):
+        ran.append(cmd)
+        return type("P", (), {"returncode": 0, "stdout": json.dumps({"context": "c", "status": "ok"})})()
+
+    monkeypatch.setattr(M.subprocess, "run", fake)
+    assert M._cloud_retrieve("q") == {"context": "c", "status": "ok"}
+    assert ran[0][:2] == ["/usr/bin/node", str(script)] and json.loads(ran[0][2])["question"] == "q"
+    for bad in ('null', 'not json', '[]', '{"status":"ok"}'):
+        monkeypatch.setattr(M.subprocess, "run", lambda cmd, bad=bad, **kw: type("P", (), {"returncode": 0, "stdout": bad})())
+        assert M._cloud_retrieve("q") is None
+    monkeypatch.setattr(M.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, 8)))
+    assert M._cloud_retrieve("q") is None
+    monkeypatch.setattr(M, "_node_script", lambda name: None)
+    assert M._cloud_retrieve("q") is None
+
+
+def test_cloud_retrieve_end_to_end_with_the_real_node_script(monkeypatch, tmp_path):
+    """The real cloud-retrieve-invoke.js, logged out: it answers null (so the local server is used), and no token is read here."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("SPOOKLING_TOKEN", raising=False)
+    if M._node_script("cloud-retrieve-invoke.js") and M.shutil.which("node"):
+        assert M._cloud_retrieve("which database did we pick?") is None

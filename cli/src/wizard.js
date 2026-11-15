@@ -12,13 +12,15 @@ import { flyOnce } from './ghost.js';
 import { ALLOW_SHARE_QUESTION, forgetAdded, pendingShareRules, recordAdded, addedRules, setShareDeclined, shareDeclined } from './allow-share.js';
 import { stage } from './stage.js';
 import {
-  HOOK_FILES, MCP_NAME, addHooks, addMcp, addPermissions, claudeDesktopConfigPath, commandsPath, hasPermissions, isOurShareCommand, removePermissions, shareCommand, SHARE_TOOLS, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
+  HOOK_FILES, CLOUD_HOOK_FILES, MCP_NAME, addHooks, addMcp, addPermissions, claudeDesktopConfigPath, commandsPath, hasPermissions, isOurShareCommand, removePermissions, shareCommand, SHARE_TOOLS, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
   wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath, STATUS_FILE, addStatusLine, removeStatusLine, isOurStatus,
   addCodexMcp, codexConfigPath, codexEntry, codexMcpEntry, codexMcpToml, installVersions, mcpCommand, ourHookCommands, removeCodexMcp,
 } from './hooks.js';
 import { takeShareFailures } from './upload-state.js';
 import { pendingShares, pendingUploads, skipText, skippedSessionIds, uploadProblems } from './push.js';
 import { readCredentials, writeFileSecure } from './credentials.js';
+import { createCloud } from './cloud.js';
+import { installedMode } from './cloud-retrieve.js';
 import { compareVersions, updateAvailable } from './registry.js';
 import { createRun, tilde } from './backup.js';
 import { checkToml } from './toml-check.js';
@@ -37,6 +39,7 @@ export const SERVER_DIR = join(INSTALL_DIR, 'server'), HOOKS_DIR = join(INSTALL_
 // SPOOKLING_INIT_PORT exists for the tests, which must not talk to a real server on 7447
 const PORT = Number(process.env.SPOOKLING_INIT_PORT) || 7447, SERVER_URL = `http://127.0.0.1:${PORT}`, STATS = `${SERVER_URL}/v1/stats`;
 const STEPS = ['Checks', 'Harness', 'Tagger', 'Server', 'Wire harness', 'Smoke test', 'Done'];
+const claudeHookFiles = (cloud) => (cloud ? { ...HOOK_FILES, ...CLOUD_HOOK_FILES } : HOOK_FILES);
 export const DEMO_LABEL = 'demo, nothing is written';
 const IGNORE = ['keys.env', 'server.pid', 'server.log', 'cache.sqlite*', 'vectors.sqlite*', 'pulse.json*'];
 
@@ -128,7 +131,8 @@ function demoInput(fast) {
   if (stdin.isTTY) { setRaw(true); stdin.on('data', onKey); stdin.resume(); }
   const fake = (prefix) => [...`${prefix}${'x'.repeat(24 - prefix.length)}`];
   setFeed(async ({ kind, q }) => {
-    const keys = kind === 'menu' && /tagger/.test(q) ? [DOWN, DOWN, UP, UP, '\r']
+    const keys = kind === 'menu' && /build memory/.test(q) ? [DOWN, '\r'] // the demo shows the key flow, never a login
+      : kind === 'menu' && /tagger/.test(q) ? [DOWN, DOWN, UP, UP, '\r']
       : kind === 'menu' ? [DOWN, UP, '\r']
       : kind === 'hidden' ? [...fake(/OpenRouter/.test(q) ? 'sk-or-v1-' : 'sk-ant-api03-'), '\r']
       : kind === 'confirm' ? ['y', '\r'] : ['\r'];
@@ -138,7 +142,7 @@ function demoInput(fast) {
   return { beat, stop() { setFeed(null); if (stdin.isTTY) { stdin.off('data', onKey); stdin.pause(); setRaw(false); } } };
 }
 
-const newCtx = (project, scope = 'project') => ({
+export const newCtx = (project, scope = 'project') => ({
   project, scope, mem: join(project, '.memory'), written: [], skipped: [], problems: [], keys: {},
   dry: false, say: async () => {}, beat: async () => {},
 });
@@ -361,7 +365,7 @@ function vendorUploader(from, dir) {
   const lib = join(dir, 'hooks', 'lib');
   mkdirSync(lib, { recursive: true });
   writeFileSync(join(lib, 'package.json'), '{ "type": "module" }\n');
-  for (const f of ['cloud.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js', 'repo-url.js']) cpSync(join(src, f), join(lib, f));
+  for (const f of ['cloud.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js', 'repo-url.js', 'cloud-retrieve.js', 'cloud-retrieve-invoke.js']) cpSync(join(src, f), join(lib, f));
 }
 
 export function install(from, dir) {
@@ -497,8 +501,9 @@ function recordInstall(ctx) {
     const entry = {
       harness: ctx.harness, scope: ctx.scope, project: ctx.scope === 'project' ? resolve(ctx.project) : null,
       ghost: ctx.harness === 'claude' ? !!ctx.ghostOn : null,
+      mode: ctx.mode === 'cloud' ? 'cloud' : 'keys',
       tagger: Math.max(0, TAGGERS.findIndex((t) => t.model === ctx.model)),
-      start: !!(ctx.pid || ctx.reused || ctx.serverUp),
+      start: ctx.mode === 'cloud' ? false : !!(ctx.pid || ctx.reused || ctx.serverUp),
     };
     const rest = readInstalls(home).filter((i) => installKey(i) !== installKey(entry));
     writeFileSecure(installsPath(home), JSON.stringify({ version: VERSION, updatedAt: new Date().toISOString(), installs: [...rest, entry] }, null, 2) + '\n');
@@ -585,7 +590,7 @@ export async function detectInstall({ project = process.cwd(), home = homedir(),
       const liveTagger = TAGGERS.findIndex((t) => t.model === live?.tagger?.model);
       const tagger = s?.tagger ?? (liveTagger >= 0 ? liveTagger : null) ?? fromKeys(dir) ?? fromKeys(project) ?? fromKeys(home) ?? 0;
       found.push({
-        harness, scope, project: dir, tagger,
+        harness, scope, project: dir, tagger, mode: s?.mode === 'cloud' ? 'cloud' : 'keys',
         ghost: harness === 'claude' ? (s?.ghost ?? ghost) : null,
         start: s?.start ?? (!!live || !!readPid(dir)),
       });
@@ -640,7 +645,7 @@ export async function initUpdate({ project = process.cwd(), home = homedir(), pr
   let code = 0;
   for (const t of targets) {
     out(`\n   ${paint(C.GHOST, `${t.harness === 'claude' ? 'Claude Code' : 'Codex'}, ${t.scope} scope`)}${t.scope === 'project' ? paint(C.GREY, `  ${t.project}`) : ''}\n`);
-    Object.assign(shared, { harness: t.harness, tagger: t.tagger, ghost: t.ghost !== false, start: t.start });
+    Object.assign(shared, { harness: t.harness, tagger: t.tagger, mode: t.mode, ghost: t.ghost !== false, start: t.start });
     const ctx = { ...newCtx(t.project, t.scope), ghost: true, auto: shared, run };
     const st = { live: false, close() {} };
     code = Math.max(code, await steps(ctx, { anim: false, st }));
@@ -660,10 +665,10 @@ export async function initUpdate({ project = process.cwd(), home = homedir(), pr
   return code;
 }
 
-export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false, ghost = true, allowShare } = {}) {
+export async function init({ anim = true, project = process.cwd(), scope = 'project', dry = false, fast = false, ghost = true, allowShare, mode, home, login } = {}) {
   const label = dry ? DEMO_LABEL : '';
   await play({ anim: anim && !fast, keep: fits(anim), label });
-  const ctx = { ...newCtx(project, scope), ghost, allowShare };
+  const ctx = { ...newCtx(project, scope), ghost, allowShare, ...(mode && { mode }), ...(home && { home }), ...(login && { login }) };
   const demo = dry ? demoInput(fast) : null;
   const st = stage({ anim, label, hold: fast ? 0 : 1200 });
   Object.assign(ctx, { dry, say: st.say, beat: demo?.beat ?? ctx.beat });
@@ -714,10 +719,39 @@ async function stepHarness(ctx) {
   if (ctx.harness === 'claude') ctx.claude = await claudeCli(ctx);
 }
 
+export const MODES = ['Log in to Spookling and use your plan (recommended)', 'Enter API keys (as today)'];
+
+// "How should Spookling build memory?" Cloud: the existing device login, no key, no keys.env, no local tagger. Returns true for cloud.
+async function stepMode(ctx) {
+  let cloud;
+  if (ctx.auto) cloud = ctx.auto.mode === 'cloud';
+  else if (ctx.mode) cloud = ctx.mode === 'cloud'; // init(mode) from the caller
+  else {
+    // without a terminal (a pipe, CI) nobody can approve a device login: the default stays the API-key flow
+    const tty = !ctx.dry && (process.stdin.isTTY && process.stdout.isTTY);
+    cloud = (await choose('   How should Spookling build memory?', MODES, tty ? 0 : 1)) === 0;
+  }
+  ctx.mode = cloud ? 'cloud' : 'keys';
+  if (!cloud) return false;
+  ok(MODES[0]);
+  ctx.decider = null;
+  ctx.model = null;
+  const home = homeOf(ctx);
+  const who = () => { const c = readCredentials({ home }); return c.token ? (c.user?.email || c.user?.name || c.user?.id || 'saved login') : null; };
+  if (ctx.dry) { info('demo: the device login is not run'); return true; }
+  if (who()) { ok(`already logged in as ${who()}`); return true; }
+  if (ctx.auto) { warn('Cloud mode needs a login. Run spookling login, then run update again.'); await fail(ctx, 'not logged in'); return true; }
+  const { login } = await import('./account.js');
+  const code = await (ctx.login || login)({ home, cwd: ctx.project });
+  if (code !== 0 || !who()) { warn('The login did not finish.'); await fail(ctx, 'cloud login did not finish'); }
+  return true;
+}
+
 // How the tagger runs, its key, and .memory/.gitignore.
-async function stepTagger(ctx) {
+export async function stepTagger(ctx) {
   // the demo reads neither the environment nor keys.env, so the key prompt shows
   await step(ctx, 3);
+  if (await stepMode(ctx)) return; // cloud: nothing to tag locally, no key, no .memory
   const t = TAGGERS[ctx.auto ? ctx.auto.tagger : await choose('   How should the tagger run?', TAGGERS.map((x) => x.label))];
   ctx.decider = t.decider || null;
   ctx.model = t.model;
@@ -798,13 +832,15 @@ async function stepServer(ctx) {
     } else {
       if (!ctx.dry) ok('server installed');
       if (ctx.auto) await stopOldServers(ctx);
-      const up = !ctx.dry && (await stats() || await stats(3000)); // a busy server can miss one probe
-      if (up?.tagger && up.tagger.model !== ctx.model) {
+      const up = ctx.mode !== 'cloud' && !ctx.dry && (await stats() || await stats(3000)); // a busy server can miss one probe
+      if (ctx.mode === 'cloud') info('Cloud mode: no local memory server is started. The MCP tools and hooks ask Spookling, and say nothing if it is down.');
+      else if (up?.tagger && up.tagger.model !== ctx.model) {
         const p = readPid(ctx.project);
         warn(`a server already answers on 127.0.0.1:${PORT}, tagging with ${taggerText(up.tagger)}.`);
         info(`Stop it${p?.alive ? ` (pid ${p.pid})` : ''}, then run init again to switch the tagger.`);
         await fail(ctx, 'the running server has another tagger');
-      } else if (up) { ctx.reused = true; ok(`a server already answers on 127.0.0.1:${PORT}`); }
+      } else if (ctx.mode === 'cloud') { /* said above */ }
+      else if (up) { ctx.reused = true; ok(`a server already answers on 127.0.0.1:${PORT}`); }
       else if (await yes(ctx, '   Start it in the background? (pid in .memory/server.pid, log in .memory/server.log)', true, ctx.auto?.start)) {
         if (ctx.dry) {
           info('demo: not started');
@@ -839,8 +875,8 @@ async function stepWire(ctx) {
     info('The ghost appears in hook activity; ready/active messages follow successful server checks or recall.');
   }
   else {
-    const handlers = hookHandlers(HOOKS_DIR), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
-    for (const f of [...new Set(Object.values(HOOK_FILES)), 'pulse.js', STATUS_FILE]) {
+    const handlers = hookHandlers(HOOKS_DIR, undefined, { cloud: ctx.mode === 'cloud' }), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
+    for (const f of [...new Set(Object.values(claudeHookFiles(ctx.mode === 'cloud'))), 'cloud.cjs', 'pulse.js', STATUS_FILE]) {
       if (!existsSync(join(hooksAt, f))) {
         warn(`${join(hooksAt, f)} is missing; Claude Code will report it on each event.`);
         await fail(ctx, `hook script ${f} missing`);
@@ -852,7 +888,7 @@ async function stepWire(ctx) {
     let line = '';
     try { line = ghost ? addStatusLine(ctx.dry ? {} : readJson(sp), HOOKS_DIR).statusLine : ''; } catch {} // mergeFile reports it
     await mergeFile(ctx, sp, (s) => (ghost ? addStatusLine(addHooks(s, handlers), HOOKS_DIR) : addHooks(s, handlers)), {
-      what: `hooks: PreCompact, UserPromptSubmit, Stop, SessionEnd${ghost ? '; the ghost in the status line' : ''}`,
+      what: `hooks: ${ctx.mode === 'cloud' ? 'SessionStart, ' : ''}PreCompact, UserPromptSubmit, Stop, SessionEnd${ghost ? '; the ghost in the status line' : ''}`,
       preview: `${hooksJson(handlers)}${line ? `\n"statusLine": ${JSON.stringify(line, null, 2)}` : ''}\n  merged in; nothing else in the file changes`
         + (line && / --then /.test(line.command) ? '\n  your status line stays first; uninstall puts it back as it was' : ''),
       same: `${rel(ctx, sp)} already has the hooks${ghost ? ' and the ghost' : ''}`,
@@ -928,8 +964,27 @@ async function shareCommandFile(ctx) {
 }
 
 // Ask the server for its stats.
-async function stepSmoke(ctx) {
+// Cloud mode: the token answers GET /cli/orgs. No server is involved.
+async function smokeCloud(ctx) {
+  const home = homeOf(ctx), creds = readCredentials({ home });
+  const who = creds.user?.email || creds.user?.name || creds.user?.id || 'saved login';
+  if (ctx.dry) { out(`   ${paint(C.GREY, 'GET /cli/orgs')}\n`); ok(`logged in as ${who}`); return info('demo: a sample reply'); }
+  let base = '';
+  try { base = (ctx.cloud || createCloud({ home, timeoutMs: 6000 })).base(); } catch { /* the call below reports it */ }
+  out(`   ${paint(C.GREY, `GET ${base ? `${base}/cli/orgs` : '/cli/orgs'}`)}\n`);
+  try {
+    await (ctx.cloud || createCloud({ home, timeoutMs: 6000 })).listOrgs();
+    ok(`the cloud answered: logged in as ${who}${creds.defaultOrgName ? `, org ${creds.defaultOrgName}` : ''}`);
+    ctx.serverUp = true;
+  } catch (e) {
+    warn(e?.status === 401 ? 'The saved login was rejected. Run spookling login, then init again.' : `The cloud did not answer (${e?.code || e?.message || 'error'}). Check your connection.`);
+    await fail(ctx, 'cloud smoke test failed');
+  }
+}
+
+export async function stepSmoke(ctx) {
   await step(ctx, 6);
+  if (ctx.mode === 'cloud') return smokeCloud(ctx);
   out(`   ${paint(C.GREY, `GET ${STATS} `)}`);
   let res;
   if (ctx.dry) {
@@ -958,7 +1013,7 @@ async function stepDone(ctx, { anim, st }) {
     try {
       const w = wiring(readJson(settingsPath(project, scope)), readJson(mcpPath(project, scope)));
       const desktopMcp = wiring({}, readJson(claudeDesktopConfigPath())).mcp;
-      wired = w.events.length === Object.keys(HOOK_FILES).length && w.mcp && desktopMcp;
+      wired = w.events.length === Object.keys(claudeHookFiles(ctx.mode === 'cloud')).length && w.mcp && desktopMcp;
     } catch { wired = false; }
   }
   if (ctx.harness === 'codex' && !ctx.dry) {
@@ -1123,17 +1178,25 @@ export async function status(project = process.cwd(), get = stats, home = homedi
   const line = (label, text, good) => out(`   ${good ? paint(C.MINT, '✓') : paint(C.LILAC, '!')} ${label.padEnd(8)} ${text}\n`);
   const ctx = newCtx(project);
   out(`${paint(C.GHOST, 'Spookling Memory', true)}  ${paint(C.GREY, project)}\n`);
-  const s = await get() || await get(3000), p = readPid(project); // one slow probe is not "down"
+  const cloudOn = installedMode({ cwd: project, home }) === 'cloud';
+  const s = cloudOn ? await get() : await get() || await get(3000), p = readPid(project); // one slow probe is not "down"
+  if (cloudOn) {
+    const c = readCredentials({ home });
+    line('mode', c.token ? `cloud, logged in as ${c.user?.email || c.user?.name || c.user?.id || 'saved login'}, org ${c.defaultOrgName || 'none chosen (spookling login picks one)'}`
+      : 'cloud, not logged in (run spookling login)', !!c.token);
+  }
   line('server', s ? `up on 127.0.0.1:${PORT}${p?.alive ? `, pid ${p.pid}` : ''}`
-    : `down${p && !p.alive ? ` (stale .memory/server.pid: pid ${p.pid} is not running)` : ''}`, !!s);
+    : cloudOn ? 'not running (cloud mode does not need it)'
+      : `down${p && !p.alive ? ` (stale .memory/server.pid: pid ${p.pid} is not running)` : ''}`, !!s || cloudOn);
   const { refs, hookRefs, track } = refTracker();
   const { where, events } = scanClaude({ project, home, ctx, line, track });
-  line('hooks', where.events.join('; ') || 'none in .claude/settings.json or ~/.claude/settings.json', events.length === Object.keys(HOOK_FILES).length);
+  const hookFiles = claudeHookFiles(cloudOn), nHooks = Object.keys(hookFiles).length;
+  line('hooks', where.events.join('; ') || 'none in .claude/settings.json or ~/.claude/settings.json', events.length === nHooks);
   const ghostIn = ['project', 'user'].filter((sc) => { try { return isOurStatus(readJson(settingsPath(project, sc)).statusLine); } catch { return false; } });
   line('ghost', ghostIn.length ? `in the status line (${ghostIn.map((sc) => rel(ctx, settingsPath(project, sc))).join(', ')})`
     : 'not in the status line (init asks; --no-ghost skips it)', true);
   line('mcp', where.mcp.join('; ') || 'no entry in .mcp.json or ~/.claude.json', where.mcp.length > 0);
-  const missing = [...new Set(Object.values(HOOK_FILES))].filter((f) => !existsSync(join(HOOKS_DIR, f)));
+  const missing = [...new Set(Object.values(hookFiles))].filter((f) => !existsSync(join(HOOKS_DIR, f)));
   const cx = scanCodex({ project, ctx, line, track });
   const { upgrade, claudeOld, codexOld, text } = upgradeState({ refs, hookRefs });
   if (upgrade) line('upgrade', text, false);
@@ -1146,11 +1209,13 @@ export async function status(project = process.cwd(), get = stats, home = homedi
   if (cx.got.size) line('trust', 'review /hooks in Codex; configured hooks are not proof of trust or execution', false);
   const codexScript = existsSync(join(HOOKS_DIR, 'spookling-codex.cjs'));
   if (cx.got.size && !codexScript && !codexOld) line('scripts', `missing ${join(HOOKS_DIR, 'spookling-codex.cjs')}`, false);
-  const claude = events.length === Object.keys(HOOK_FILES).length && where.mcp.length > 0;
+  const claude = events.length === nHooks && where.mcp.length > 0;
   line('harness', [claude && 'Claude Code', codex && 'Codex (configured; trust checked in /hooks)'].filter(Boolean).join(', ') || 'none wired', claude || codex);
-  line('tagger', s?.tagger ? taggerText(s.tagger) : 'unknown (the server is down, or older than this wizard)', !!s?.tagger);
-  keysLine(line, project, s?.tagger);
-  modelLine(line, s?.model);
+  if (!cloudOn) {
+    line('tagger', s?.tagger ? taggerText(s.tagger) : 'unknown (the server is down, or older than this wizard)', !!s?.tagger);
+    keysLine(line, project, s?.tagger);
+    modelLine(line, s?.model);
+  }
   cloudLine(line, home);
   if (checkOrgs && readCredentials({ home }).token) {
     // asked of the API now, never from a cache or a saved default; a slow or down API only costs a few seconds
@@ -1163,7 +1228,7 @@ export async function status(project = process.cwd(), get = stats, home = homedi
     if (v) line('update', `${v} is available. Run spookling update.`, false);
   }
   await uploadLines(line, home);
-  return s && !upgrade && ((claude && !missing.length) || (codex && codexScript)) ? 0 : 1;
+  return (s || cloudOn) && !upgrade && ((claude && !missing.length) || (codex && codexScript)) ? 0 : 1;
 }
 
 // the whole tree: started detached, its pid leads a process group; on Windows taskkill /T
@@ -1231,6 +1296,7 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
   for (const prob of ctx.problems) warn(prob);
   if (ctx.run?.label()) info(ctx.run.label());
   if (!SHARE && existsSync(INSTALL_DIR)) info(`The server and hooks stay in ${rel(ctx, INSTALL_DIR)}; delete that folder to remove them too.`);
+  if (installedMode({ cwd: project, home: homeOf(ctx) }) === 'cloud') info('Cloud mode: your login stays (spookling logout signs out); your cloud memory is not touched.');
   out(`\n   Your memory stays in .memory/. Run ${paint(C.GHOST, `npx spookling init${scope === 'user' ? ' --scope user' : ''}`)} to wire it back.\n`);
   return ctx.problems.length ? 1 : 0;
 }

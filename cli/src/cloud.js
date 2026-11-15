@@ -220,6 +220,13 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
       q.set('limit', '100');
       return call(`/memory/orgs/${encodeURIComponent(orgId)}/feed?${q}`, { method: 'GET', token: t || auth() });
     },
+    // cloud memory: one retrieval, and the project brief. The caller owns the time budget (timeoutMs per call).
+    retrieve({ body, token: t, timeoutMs } = {}) {
+      return call('/memory/retrieve', { method: 'POST', token: t || auth(), body, ...(timeoutMs ? { timeoutMs } : {}) });
+    },
+    projectContext({ projectKey, token: t, timeoutMs } = {}) {
+      return call(`/memory/context?${new URLSearchParams({ projectKey })}`, { method: 'GET', token: t || auth(), ...(timeoutMs ? { timeoutMs } : {}) });
+    },
     getSession({ sid, after, token: t } = {}) {
       const q = new URLSearchParams();
       if (after !== undefined && after !== null) q.set('after', String(after));

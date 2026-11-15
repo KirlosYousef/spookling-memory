@@ -10,6 +10,8 @@ export const HOOK_FILES = {
   // The desktop app closes a code session without a model Stop. Same uploader as Stop.
   SessionEnd: 'stop.js',
 };
+// Cloud mode only: the project brief at session start
+export const CLOUD_HOOK_FILES = { SessionStart: 'session-start.js' };
 export const MCP_NAME = 'spookling-memory';
 
 export const CODEX_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'Stop'];
@@ -31,7 +33,7 @@ export const codexHooksPath = (project, scope = 'project', env = process.env) =>
 
 // exec form (Claude Code v2.1.139+): no shell on any OS, so the path needs no quoting; statusMessage is the spinner's text
 const SPINNER = { UserPromptSubmit: '👻 remembering', PreCompact: '👻 keeping your rules' };
-export const hookHandlers = (hooksDir, p = path) => Object.fromEntries(Object.entries(HOOK_FILES)
+export const hookHandlers = (hooksDir, p = path, { cloud = false } = {}) => Object.fromEntries(Object.entries(cloud ? { ...HOOK_FILES, ...CLOUD_HOOK_FILES } : HOOK_FILES)
   .map(([ev, f]) => [ev, { type: 'command', command: 'node', args: [p.join(hooksDir, f)], ...(SPINNER[ev] && { statusMessage: SPINNER[ev] }) }]));
 
 // \\wsl.localhost\<distro>\... or \\wsl$\<distro>\... -> { distro, path }
@@ -52,7 +54,7 @@ export const mcpEntry = (serverDir, url, command = 'uv') => {
 };
 
 // ours: one of our scripts (.js, or .sh from an older install) under a spookling path
-const SCRIPT = /[\\/]hooks[\\/](?:(pre-compact|user-prompt-submit|stop)\.(js|sh)|spookling-codex\.cjs)\b/;
+const SCRIPT = /[\\/]hooks[\\/](?:(pre-compact|user-prompt-submit|stop|session-start)\.(js|sh)|spookling-codex\.cjs)\b/;
 export const isOurs = (h) => {
   const s = typeof h === 'string' ? h : [h?.command, ...(Array.isArray(h?.args) ? h.args : [])].filter((x) => typeof x === 'string').join(' ');
   return /spookling/i.test(s) && SCRIPT.test(s);

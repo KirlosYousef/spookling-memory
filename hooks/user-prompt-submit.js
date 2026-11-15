@@ -33,10 +33,22 @@ const emitOnlySession = (p) => {
 const chunks = [];
 process.stdin.on('data', (c) => chunks.push(c));
 process.stdin.on('error', done);
-process.stdin.on('end', () => {
+// Cloud mode: ask the Spookling cloud first (a hard ~1.8 s budget inside). null means fall through to the local server below.
+const emitCloud = (p, r) => {
+  pulse.write(p, { event: 'prompt', up: true, chats: r.items.length, cloud: true });
+  if (!r.context) return emitOnlySession(p);
+  const body = JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: r.context },
+    systemMessage: `👻 ${r.items.length || 'some'} ${r.items.length === 1 ? 'item' : 'items'} from your cloud memory` });
+  process.stdout.write(withSession(body, p), done);
+};
+process.stdin.on('end', async () => {
   const input = Buffer.concat(chunks);
   let p = {}, up = false;
   try { p = JSON.parse(input) || {}; } catch {}
+  try {
+    const r = typeof p.prompt === 'string' && await require('./cloud.cjs').retrieve(p);
+    if (r) return emitCloud(p, r);
+  } catch { /* the local path below */ }
   try {
     const req = http.request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, timeout: CONNECT_MS }, (res) => {
       let body = '';
