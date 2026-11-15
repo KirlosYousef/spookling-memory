@@ -160,7 +160,7 @@ export async function cloudRetrieve({
     const started = Date.now();
     return await withBudget((async () => {
       const id = await identify(cwd, { home, env });
-      const key = `${mode}|${id.projectKey}|${hashOf(question)}`;
+      const key = `${mode}|${id.projectKey}|${sessionId ?? ""}|${hashOf(question)}`; // per session: its answer was cut by what that session had seen
       const hit = cacheGet(home, key, now());
       if (hit) return { ...hit, cached: true };
       const client = cloud ?? createCloud({ env, home, ...(fetchImpl && { fetchImpl }) });

@@ -156,6 +156,17 @@ test('cloudRetrieve: a repeat of the same prompt within 60 s is answered from th
   } finally { await api.close(); }
 });
 
+test('cloudRetrieve: the cache is per session (an answer cut by one session\'s shown ids is not another session\'s)', async () => {
+  const api = await fakeApi(() => ok());
+  try {
+    const home = cloudHome({ api: api.url }), cwd = workdir();
+    await cloudRetrieve({ question: QUESTION, cwd, sessionId: 'a', home, env: {} });
+    assert.equal((await cloudRetrieve({ question: QUESTION, cwd, sessionId: 'b', home, env: {} })).cached, false);
+    assert.equal((await cloudRetrieve({ question: QUESTION, cwd, sessionId: 'a', home, env: {} })).cached, true);
+    assert.equal(api.seen.length, 2);
+  } finally { await api.close(); }
+});
+
 test('cloudRetrieve: null, and no request, for an uninformative prompt, a folder not in cloud mode, or a logged-out machine', async () => {
   const api = await fakeApi(() => ok());
   try {
