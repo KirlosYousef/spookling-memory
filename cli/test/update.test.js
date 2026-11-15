@@ -57,7 +57,7 @@ const base = (extra = {}) => {
       home: tmp(), cwd: tmp(), current: '0.2.0', write: c.write,
       lookup: async () => '0.2.0',
       run: (cmd, args, o) => { calls.push({ cmd, args, o }); return { status: 0 }; },
-      isStale: () => false, detect: async () => ({ targets: [{}] }), reinit: async () => 0,
+      isStale: () => false, wiredAt: () => [], detect: async () => ({ targets: [{}] }), reinit: async () => 0,
       ...extra,
     },
   };
@@ -127,9 +127,9 @@ test('update --version: validated as semver; a downgrade needs --force', async (
 
 test('update on the latest version still re-wires when the hooks use an older folder', async () => {
   const seen = [];
-  let r = base({ isStale: () => true, reinit: async (o) => { seen.push(o.project); return 0; } });
+  let r = base({ isStale: () => true, wiredAt: () => ['0.1.9', '0.2.0'], reinit: async (o) => { seen.push(o.project); return 0; } });
   assert.equal(await update(r.opts), 0);
-  assert.match(text(r.c), /is the latest\.\nYour hooks still use an older version folder; re-wiring them to this one\./);
+  assert.match(text(r.c), /is the latest\.\nYour hooks, MCP entries or launcher still point at 0\.1\.9; re-wiring them to 0\.2\.0\./);
   assert.deepEqual(seen, [r.opts.cwd]);
   assert.deepEqual(r.calls, []);
   seen.length = 0;

@@ -3,7 +3,8 @@ import { spawnSync } from 'node:child_process';
 import process from 'node:process';
 import { homedir } from 'node:os';
 import { compareVersions, isSemver, latestVersion } from './registry.js';
-import { VERSION, detectInstall, initUpdate, staleWiring } from './wizard.js';
+import { VERSION } from './version.js';
+import { detectInstall, initUpdate, staleWiring, wiredVersions } from './wizard.js';
 
 const say = (write, line) => write(`${line}\n`);
 const MANUAL = 'npx spookling@latest init';
@@ -15,7 +16,7 @@ const MANUAL = 'npx spookling@latest init';
 export async function update({
   home = homedir(), cwd = process.cwd(), check = false, version, force = false, current = VERSION,
   fetchImpl, run = spawnSync, write = (s) => process.stdout.write(s),
-  reinit = initUpdate, detect = detectInstall, lookup = latestVersion, isStale = staleWiring,
+  reinit = initUpdate, detect = detectInstall, lookup = latestVersion, isStale = staleWiring, wiredAt = wiredVersions,
 } = {}) {
   if (version !== undefined && !isSemver(version)) {
     say(write, `--version takes a version like 1.2.3, not "${String(version).slice(0, 40).replace(/[^\x20-\x7e]/g, '')}".`);
@@ -48,9 +49,12 @@ export async function update({
     if (!version && !isStale(cwd, home)) return 0;
     const { targets } = await detect({ project: cwd, home });
     if (!targets.length) return 0;
-    say(write, 'Your hooks still use an older version folder; re-wiring them to this one.');
+    const was = wiredAt(cwd, home).filter((v) => v !== current);
+    say(write, `Your hooks, MCP entries or launcher still point at ${was.join(', ') || 'an older version folder'}; re-wiring them to ${current}.`);
     return reinit({ project: cwd, home });
   }
+  const wired = wiredAt(cwd, home);
+  if (wired.some((v) => v !== current)) say(write, `Running ${current}; hooks and MCP entries point at ${wired.join(', ')}. They will be re-wired to ${target}.`);
   say(write, `${order > 0 ? 'Updating' : 'Installing'} spookling ${current} → ${target}…`);
   if (order < 0) say(write, 'An older version may not know `init --update` and ask its questions instead.');
   const r = run('npx', ['--yes', `spookling@${target}`, 'init', '--update'], {
