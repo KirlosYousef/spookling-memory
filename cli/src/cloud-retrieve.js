@@ -181,9 +181,28 @@ export async function cloudRetrieve({
   } catch { return null; }
 }
 
+// ---- project rules: an offline copy per project, so a session started without the network still gets them
+
+const rulesCachePath = (home, projectKey) => join(stateDir(home), 'rules-cache', `${createHash('sha1').update(projectKey).digest('hex')}.json`);
+
+/** Remember the rules text (or that there are none) the API gave for a project. Never throws; never writes into the repo. */
+export function writeRulesCache(home, projectKey, rules, now = Date.now) {
+  writeJson(rulesCachePath(home, projectKey), { projectKey, rules: typeof rules === 'string' && rules.trim() ? rules : null, fetchedAt: new Date(now()).toISOString() });
+}
+
+/** { rules, fetchedAt } from the last successful fetch for this project, or null. */
+export function readRulesCache(home, projectKey) {
+  const j = readJson(rulesCachePath(home, projectKey));
+  return j.projectKey === projectKey && typeof j.rules === 'string' && j.rules.trim() ? { rules: j.rules, fetchedAt: typeof j.fetchedAt === 'string' ? j.fetchedAt : '' } : null;
+}
+
+const cachedNote = (at) => `(Cached copy of the project rules${at ? ` from ${at.slice(0, 16).replace('T', ' ')} UTC` : ''}: Spookling could not reach the server at session start, so a newer change may be missing. Follow them all the same.)`;
+
 /**
- * The project brief for a session start, or null: not cloud mode, already given to this session, no project, status not "ok",
- * offline or past the budget. Marks the session as briefed only when a brief is returned.
+ * What a session start adds, or null: { rules, brief, rulesCached }. rules is the API's ready-made <project-rules> block (or ''),
+ * brief the project brief when its status is "ok" (or ''). Null when not in cloud mode, already given to this session, no project,
+ * or nothing to say. When the API cannot be reached in time, the cached rules of the last successful fetch are used (rulesCached).
+ * Marks the session as briefed only when something is returned.
  */
 export async function cloudBrief({ cwd, sessionId, home = homedir(), env = process.env, budgetMs, now = Date.now, cloud, fetchImpl } = {}) {
   try {
@@ -191,15 +210,31 @@ export async function cloudBrief({ cwd, sessionId, home = homedir(), env = proce
     if (sessionId && readJson(shownPath(home)).sessions?.[sessionId]?.briefed) return null;
     const budget = budgetMs ?? budgetFrom(env, DEFAULT_BUDGET_MS);
     const started = Date.now();
-    return await withBudget((async () => {
-      const { projectKey } = await identify(cwd, { home, env });
-      if (!projectKey) return null;
-      const client = cloud ?? createCloud({ env, home, ...(fetchImpl && { fetchImpl }) });
-      const data = await client.projectContext({ projectKey, timeoutMs: Math.max(50, budget - (Date.now() - started)) });
-      const brief = data?.status === 'ok' && typeof data.brief === 'string' ? data.brief.trim() : '';
-      if (!brief) return null;
-      if (sessionId) updateShown(home, sessionId, now(), () => ({ briefed: true }));
-      return brief;
-    })(), budget);
+    const id = await withBudget(identify(cwd, { home, env }), budget);
+    const projectKey = id?.projectKey;
+    if (!projectKey) return null;
+    const client = cloud ?? createCloud({ env, home, ...(fetchImpl && { fetchImpl }) });
+    const data = await withBudget(client.projectContext({ projectKey, timeoutMs: Math.max(50, budget - (Date.now() - started)) }),
+      Math.max(50, budget - (Date.now() - started)));
+    let rules = '', rulesCached = false;
+    const brief = data?.status === 'ok' && typeof data.brief === 'string' ? data.brief.trim() : '';
+    if (data && typeof data === 'object') {
+      rules = typeof data.rules === 'string' ? data.rules.trim() : '';
+      writeRulesCache(home, projectKey, rules, now);
+    } else {
+      const hit = readRulesCache(home, projectKey);
+      if (hit) { rules = `${cachedNote(hit.fetchedAt)}\n${hit.rules.trim()}`; rulesCached = true; }
+    }
+    if (!brief && !rules) return null;
+    if (sessionId) updateShown(home, sessionId, now(), () => ({ briefed: true }));
+    return { rules, brief, rulesCached };
   } catch { return null; }
+}
+
+/** One context block: the rules first, whole; the brief after them, cut first when the two exceed max. */
+export function startContext({ rules = '', brief = '' } = {}, max = 10000) {
+  const r = String(rules || '').slice(0, max);
+  const room = max - r.length - (r ? 2 : 0);
+  const b = room > 0 ? String(brief || '').slice(0, room) : '';
+  return [r, b].filter(Boolean).join('\n\n');
 }

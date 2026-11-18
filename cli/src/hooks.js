@@ -25,7 +25,8 @@ export const codexHandlers = (hooksDir, p = path) => {
   const command = p === path.win32 ? `node "${script}"` : `node ${quote(script)}`;
   return Object.fromEntries(CODEX_EVENTS.map((ev) => [ev, {
     type: 'command', command, timeout: ev === 'PreCompact' ? 65 : 20, statusMessage: '👻 Spookling memory',
-    ...(ev === 'UserPromptSubmit' && { additionalContextLimit: 4000 }),
+    // the events that return context: over the 2,500-token default Codex spills it to a file (SessionStart: project rules + brief)
+    ...((ev === 'UserPromptSubmit' || ev === 'SessionStart') && { additionalContextLimit: 4000 }),
   }]));
 };
 export const codexHooksPath = (project, scope = 'project', env = process.env) =>
@@ -95,9 +96,10 @@ export function addHooks(settings, handlers) {
 // permissions.allow rules for the share tools. Other rules, and the other keys of permissions, are never touched.
 // All read-only (or, for memory_share, confirmed by Spookling per share). memory_delete and memory_autoshare are never listed.
 const rule = (t) => `mcp__${MCP_NAME}__${t}`;
-export const SHARE_TOOLS = ['memory_share', 'memory_share_status', 'team_sessions', 'team_session', 'team_orgs'].map(rule);
+// project_rules only reads; project_rule_set and project_rule_remove are never listed (each change needs the user's own yes).
+export const SHARE_TOOLS = ['memory_share', 'memory_share_status', 'team_sessions', 'team_session', 'team_orgs', 'project_rules'].map(rule);
 // Rules added to SHARE_TOOLS after the first release: someone who accepted the earlier list gets just these, without a new question.
-export const LATER_SHARE_TOOLS = ['team_orgs'].map(rule);
+export const LATER_SHARE_TOOLS = ['team_orgs', 'project_rules'].map(rule);
 function checkPerms(settings) {
   if (!isObj(settings)) throw new Error('settings.json is not a JSON object');
   const p = settings.permissions;
@@ -149,8 +151,34 @@ Org argument: $ARGUMENTS
 If it fails, tell the user what it printed and stop. Do not try another way to share, and do not change any settings.
 `;
 export const isOurShareCommand = (text) => typeof text === 'string' && text.includes(SHARE_MARK);
-export const commandsPath = (project, scope = 'project', env = process.env, home = homedir()) =>
-  join(scope === 'user' ? configDir(env, home) : join(project, '.claude'), 'commands', SHARE_COMMAND_FILE);
+export const commandsPath = (project, scope = 'project', env = process.env, home = homedir(), file = SHARE_COMMAND_FILE) =>
+  join(scope === 'user' ? configDir(env, home) : join(project, '.claude'), 'commands', file);
+
+// /spookling-rules: typing it is NOT a yes. Listing is read-only; a change goes through the MCP tool, which asks the user in a
+// dialog, or (no dialog) through \`spookling rules set|remove\`, which the user runs in their own terminal and which asks y/N there.
+export const RULES_COMMAND_FILE = 'spookling-rules.md';
+const RULES_MARK = '<!-- spookling-memory: rules command -->';
+export const rulesCommand = () => `---
+description: See or change this project's Spookling team rules
+argument-hint: [rule text | replace <id> <new text> | remove <id>]
+allowed-tools: mcp__${MCP_NAME}__project_rules
+---
+${RULES_MARK}
+The user wants to see or change the Spookling project rules: team rules every AI session on this project follows.
+
+Arguments: $ARGUMENTS
+
+- No arguments: call the \`project_rules\` tool and show the rules as it lists them (number, text, id, who set it and when).
+- \`remove <id>\`: call \`project_rule_remove\` with that rule id.
+- \`replace <id> <new text>\`: call \`project_rule_set\` with the new text and \`replaces_rule_id\` set to that id.
+- Anything else is the text of a new rule: call \`project_rule_set\` with exactly that text. Do not reword it.
+
+Typing this command is not the user's confirmation. The tool shows the change in a dialog and the user accepts or declines it there.
+If the tool says it needs the user's confirmation (no dialog in this chat), give the user the exact \`spookling rules ...\` command
+it returns, word for word, to run in their own terminal (it shows the change and asks y/N). Do not run that command yourself, do not
+claim the user agreed, and do not change the rules any other way.
+`;
+export const isOurRulesCommand = (text) => typeof text === 'string' && text.includes(RULES_MARK);
 
 export function removeHooks(settings) {
   checkShape(settings);

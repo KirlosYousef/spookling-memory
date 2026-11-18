@@ -42,6 +42,14 @@ test('init copies the uploader next to the hooks', async () => {
   assert.equal(existsSync(join(to, 'hooks', 'lib', 'team.js')), true);
   assert.equal(existsSync(join(to, 'hooks', 'lib', 'team-invoke.js')), true);
   assert.equal(existsSync(join(to, 'hooks', 'lib', 'repo-url.js')), true);
+  assert.equal(existsSync(join(to, 'hooks', 'lib', 'rules.js')), true, 'team-invoke.js needs it for the project rules tools');
+  // the installed bridge loads its whole module graph: a missing copy would break the MCP rules tools
+  for (const dir of [['cli', 'src'], ['hooks', 'lib']]) {
+    const h = homeOf();
+    const bridge = spawnSync(process.execPath, [join(to, ...dir, 'team-invoke.js'), 'rules-get', '{}'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: h, USERPROFILE: h } });
+    assert.equal(bridge.status, 0, bridge.stderr);
+    assert.match(JSON.parse(bridge.stdout).error, /Not logged in/, dir.join('/'));
+  }
   assert.equal(JSON.parse(readFileSync(join(to, 'hooks', 'lib', 'package.json'), 'utf8')).type, 'module');
   const home = homeOf();
   writeCredentials({ token: 'spk_copied', user: { name: 'Ada' } }, { home });
@@ -53,7 +61,7 @@ test('init copies the uploader next to the hooks', async () => {
     const path = join(home, '.spookling', 'upload-state.json');
     const text = existsSync(path) ? readFileSync(path, 'utf8') : '';
     return text.includes('Make the sync idempotent') ? text : ''; // the file first appears with the cached repo remote
-  });
+  }, 12000); // the detached uploader waits for the log to go quiet first: under a full parallel suite that passed 4 s now and then
   assert.match(state, /Make the sync idempotent/);
   assert.deepEqual(readFileSync(logPath), before);
 });

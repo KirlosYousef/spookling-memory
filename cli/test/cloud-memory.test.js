@@ -1,13 +1,14 @@
 // Phase 4: cloud memory. The wizard's two paths, the shared cloud-retrieve client (budget, 401, offline, cache, shownIds),
 // the hooks' fallback order, the session brief, status, and the MCP shell-out.
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { envelope, listen, readReq, runHook, tmpHome } from './helpers.mjs';
-import { ASK_BUDGET_MS, cloudBrief, cloudMode, cloudRetrieve, informative, installedMode, normalizeRemote, shownIds } from '../src/cloud-retrieve.js';
+import { ASK_BUDGET_MS, cloudBrief, readRulesCache, startContext, cloudMode, cloudRetrieve, informative, installedMode, normalizeRemote, shownIds } from '../src/cloud-retrieve.js';
 import { setFeed, press } from '../src/term.js';
 import { MODES, detectInstall, newCtx, stepSmoke, stepTagger } from '../src/wizard.js';
 import { CLOUD_HOOK_FILES, addHooks, hookHandlers, isOurs } from '../src/hooks.js';
@@ -232,7 +233,7 @@ test('cloudBrief: GET /memory/context with the project key, only for status ok, 
   const api = await fakeApi(() => reply);
   try {
     const home = cloudHome({ api: api.url }), cwd = workdir();
-    assert.equal(await cloudBrief({ cwd, sessionId: 'a', home, env: {} }), 'Building the billing service. Postgres chosen.');
+    assert.deepEqual(await cloudBrief({ cwd, sessionId: 'a', home, env: {} }), { brief: 'Building the billing service. Postgres chosen.', rules: '', rulesCached: false });
     assert.equal(api.seen[0].method, 'GET');
     assert.match(api.seen[0].url, /^\/memory\/context\?projectKey=dir%3Aspk-work-/);
     assert.equal(api.seen[0].auth, 'Bearer spk_testtoken');
@@ -245,6 +246,67 @@ test('cloudBrief: GET /memory/context with the project key, only for status ok, 
     assert.equal(await cloudBrief({ cwd, sessionId: 'd', home, env: {} }), null);
     assert.equal(await cloudBrief({ cwd, sessionId: 'e', home: cloudHome({ api: api.url, mode: 'keys' }), env: {} }), null);
   } finally { await api.close(); }
+});
+
+// ---------------------------------------------------------------- project rules at session start, and their offline copy
+
+const RULES = '<project-rules project="dir:x" org="Acme">\nTeam rules for this project, set by the team. Follow them in all work here.\n1. Use MVVM for all UI code.\n</project-rules>';
+
+test('cloudBrief: returns the rules with the brief, the rules alone when there is no brief, and caches them per project', async () => {
+  let reply = { data: { brief: 'Brief.', status: 'ok', rules: RULES } };
+  const api = await fakeApi(() => reply);
+  try {
+    const home = cloudHome({ api: api.url }), cwd = workdir();
+    assert.deepEqual(await cloudBrief({ cwd, sessionId: 'a', home, env: {} }), { brief: 'Brief.', rules: RULES, rulesCached: false });
+    const key = `dir:${cwd.split(/[\\/]/).pop()}`;
+    const file = join(home, '.spookling', 'rules-cache', `${createHash('sha1').update(key).digest('hex')}.json`);
+    const saved = JSON.parse(readFileSync(file, 'utf8'));
+    assert.equal(saved.rules, RULES);
+    assert.equal(saved.projectKey, key);
+    assert.ok(!Number.isNaN(Date.parse(saved.fetchedAt)));
+    assert.ok(!existsSync(join(cwd, '.spookling')) && !existsSync(join(cwd, '.memory')), 'nothing is written into the repo');
+    reply = { data: { status: 'unavailable', rules: RULES } };
+    assert.deepEqual(await cloudBrief({ cwd, sessionId: 'b', home, env: {} }), { brief: '', rules: RULES, rulesCached: false }, 'rules without a brief');
+    reply = { data: { status: 'empty', rules: null } };
+    assert.equal(await cloudBrief({ cwd, sessionId: 'c', home, env: {} }), null, 'neither');
+    assert.equal(readRulesCache(home, key), null, 'no rules now: the cache says so too');
+  } finally { await api.close(); }
+});
+
+test('cloudBrief: offline or past the budget, the cached rules are used and marked as cached', async () => {
+  const api = await fakeApi(() => ({ data: { brief: 'Brief.', status: 'ok', rules: RULES } }));
+  const home = cloudHome({ api: api.url }), cwd = workdir();
+  try { assert.ok(await cloudBrief({ cwd, sessionId: 'a', home, env: {} })); } finally { await api.close(); }
+  // the API is gone now: the credentials still point at it
+  const off = await cloudBrief({ cwd, sessionId: 'b', home, env: {} });
+  assert.equal(off.brief, '');
+  assert.equal(off.rulesCached, true);
+  assert.match(off.rules, /^\(Cached copy of the project rules from \d{4}-\d\d-\d\d \d\d:\d\d UTC: Spookling could not reach the server/);
+  assert.ok(off.rules.endsWith(RULES));
+  const slow = await fakeApi(() => 'hang');
+  try {
+    const h2 = cloudHome({ api: slow.url });
+    mkdirSync(join(h2, '.spookling', 'rules-cache'), { recursive: true });
+    const key = `dir:${cwd.split(/[\\/]/).pop()}`;
+    writeFileSync(join(h2, '.spookling', 'rules-cache', `${createHash('sha1').update(key).digest('hex')}.json`), JSON.stringify({ projectKey: key, rules: RULES, fetchedAt: '2026-11-18T09:00:00.000Z' }));
+    const started = Date.now();
+    const r = await cloudBrief({ cwd, sessionId: 'c', home: h2, env: {}, budgetMs: 300 });
+    assert.ok(Date.now() - started < 2000);
+    assert.equal(r.rulesCached, true);
+    assert.match(r.rules, /from 2026-11-18 09:00 UTC/);
+  } finally { await slow.close(); }
+  assert.equal(await cloudBrief({ cwd: workdir(), sessionId: 'd', home, env: {} }), null, 'another project has no cached copy');
+});
+
+test('startContext: the rules first and whole, the brief after them, cut first', () => {
+  assert.equal(startContext({ rules: 'R', brief: 'B' }), 'R\n\nB');
+  assert.equal(startContext({ rules: '', brief: 'B' }), 'B');
+  assert.equal(startContext({ rules: 'R', brief: '' }), 'R');
+  const rules = 'r'.repeat(7000), brief = 'b'.repeat(5000);
+  const c = startContext({ rules, brief }, 10000);
+  assert.equal(c.length, 10000);
+  assert.ok(c.startsWith(rules + '\n\n'), 'the rules are whole');
+  assert.equal(c.slice(7002), 'b'.repeat(2998));
 });
 
 // ---------------------------------------------------------------- the hooks: cloud first, then the local server, then nothing
@@ -349,6 +411,42 @@ test('Claude Code SessionStart hook: the brief once per session, nothing otherwi
     reply = { data: { status: 'unavailable' } };
     assert.equal((await start('s2')).out, '', 'a brief that is not ready');
   } finally { await api.close(); }
+});
+
+test('Claude Code SessionStart hook: the rules before the brief, the rules alone, and the cached rules offline', async () => {
+  let reply = { data: { brief: 'Building billing.', status: 'ok', rules: RULES } };
+  const api = await fakeApi(() => reply);
+  const home = cloudHome({ api: api.url }), work = workdir();
+  const env = hookEnv(home, work, api.url, 'http://127.0.0.1:9');
+  const start = (id, e = env) => runHook(SESSION_HOOK, { hook_event_name: 'SessionStart', session_id: id, cwd: work, source: 'startup' }, e);
+  try {
+    const both = JSON.parse((await start('s1')).out);
+    assert.equal(both.hookSpecificOutput.additionalContext, `${RULES}\n\nBuilding billing.`);
+    assert.equal(both.systemMessage, '👻 project rules and brief from Spookling memory');
+    reply = { data: { status: 'unavailable', rules: RULES } };
+    const alone = JSON.parse((await start('s2')).out);
+    assert.equal(alone.hookSpecificOutput.additionalContext, RULES);
+    assert.equal(alone.systemMessage, '👻 project rules from Spookling memory');
+  } finally { await api.close(); }
+  const off = JSON.parse((await start('s3')).out);
+  assert.match(off.hookSpecificOutput.additionalContext, /^\(Cached copy of the project rules/);
+  assert.ok(off.hookSpecificOutput.additionalContext.endsWith(RULES));
+  assert.equal(off.systemMessage, '👻 project rules (rules from the offline copy) from Spookling memory');
+});
+
+test('Codex SessionStart in cloud mode: the rules before the brief, and the cached rules offline', async () => {
+  const api = await fakeApi((r) => (r.url.startsWith('/memory/context') ? { data: { brief: 'Brief for Codex.', status: 'ok', rules: RULES } } : ok()));
+  const home = cloudHome({ api: api.url }), work = workdir();
+  const env = hookEnv(home, work, api.url, 'http://127.0.0.1:9');
+  const start = (id) => runHook(CODEX_HOOK, { hook_event_name: 'SessionStart', session_id: id, cwd: work, transcript_path: '/chat.jsonl' }, env);
+  try {
+    const s = JSON.parse((await start('cx1')).out);
+    assert.equal(s.hookSpecificOutput.additionalContext, `${RULES}\n\nBrief for Codex.`);
+    assert.match(s.systemMessage, /project rules and brief from your cloud memory/);
+  } finally { await api.close(); }
+  const off = JSON.parse((await start('cx2')).out);
+  assert.match(off.hookSpecificOutput.additionalContext, /^\(Cached copy of the project rules/);
+  assert.match(off.systemMessage, /project rules \(rules from the offline copy\) from your cloud memory/);
 });
 
 test('Codex hook in cloud mode: prompt from the cloud, brief at SessionStart, local server last, silence when none', async () => {

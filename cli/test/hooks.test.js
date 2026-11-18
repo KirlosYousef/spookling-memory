@@ -234,11 +234,12 @@ test('a server folder inside WSL, seen from Windows, runs through wsl.exe, never
 });
 
 // ---- share permissions and the /spookling-share command
-import { addPermissions, removePermissions, hasPermissions, SHARE_TOOLS, shareCommand, isOurShareCommand, commandsPath } from '../src/hooks.js';
+import { addPermissions, removePermissions, hasPermissions, SHARE_TOOLS, LATER_SHARE_TOOLS, shareCommand, isOurShareCommand, commandsPath, rulesCommand, isOurRulesCommand, RULES_COMMAND_FILE, codexHandlers } from '../src/hooks.js';
 
-test('addPermissions adds exactly the five share tools, once, and keeps every other rule and key', () => {
-  assert.deepEqual(SHARE_TOOLS, ['memory_share', 'memory_share_status', 'team_sessions', 'team_session', 'team_orgs'].map((t) => `mcp__spookling-memory__${t}`));
-  assert.ok(!SHARE_TOOLS.some((t) => /delete|autoshare/.test(t)));
+test('addPermissions adds exactly the six allowed tools, once, and keeps every other rule and key', () => {
+  assert.deepEqual(SHARE_TOOLS, ['memory_share', 'memory_share_status', 'team_sessions', 'team_session', 'team_orgs', 'project_rules'].map((t) => `mcp__spookling-memory__${t}`));
+  assert.ok(!SHARE_TOOLS.some((t) => /delete|autoshare|project_rule_/.test(t)), 'no tool that deletes or changes a rule');
+  assert.deepEqual(LATER_SHARE_TOOLS, ['team_orgs', 'project_rules'].map((t) => `mcp__spookling-memory__${t}`), 'an earlier yes gets project_rules quietly');
   const s = { model: 'opus', permissions: { allow: ['Bash(ls:*)'], deny: ['Read(./.env)'], defaultMode: 'plan' } };
   const a = addPermissions(s);
   assert.deepEqual(a.permissions.allow, ['Bash(ls:*)', ...SHARE_TOOLS]);
@@ -252,7 +253,7 @@ test('addPermissions adds exactly the five share tools, once, and keeps every ot
   assert.ok(hasPermissions(a) && !hasPermissions(s) && !hasPermissions({}));
 });
 
-test('removePermissions drops only our five entries and tidies only what it emptied', () => {
+test('removePermissions drops only our six entries and tidies only what it emptied', () => {
   const s = { permissions: { allow: ['Bash(ls:*)', ...SHARE_TOOLS, 'mcp__spookling-memory__memory_delete'], deny: ['x'] } };
   assert.deepEqual(removePermissions(s).permissions, { allow: ['Bash(ls:*)', 'mcp__spookling-memory__memory_delete'], deny: ['x'] });
   assert.deepEqual(removePermissions(addPermissions({})), {}, 'nothing of ours left behind');
@@ -271,4 +272,20 @@ test('the /spookling-share command allows only spookling share and is recognised
   assert.ok(isOurShareCommand(t) && !isOurShareCommand('# mine') && !isOurShareCommand(undefined));
   assert.equal(commandsPath('/p', 'project'), path.join('/p', '.claude', 'commands', 'spookling-share.md'));
   assert.equal(commandsPath('/p', 'user', { CLAUDE_CONFIG_DIR: '/c' }), path.join('/c', 'commands', 'spookling-share.md'));
+});
+
+test('the /spookling-rules command is ours, is not a yes, and allows only the read-only rules tool', () => {
+  const t = rulesCommand();
+  assert.match(t, /^---\n[\s\S]*allowed-tools: mcp__spookling-memory__project_rules\n---/);
+  assert.doesNotMatch(t, /allowed-tools:.*(project_rule_set|project_rule_remove|Bash)/);
+  assert.doesNotMatch(t, /--yes/);
+  assert.match(t, /not the user's confirmation/);
+  assert.match(t, /project_rule_set/);
+  assert.ok(isOurRulesCommand(t) && !isOurRulesCommand(shareCommand()) && !isOurShareCommand(t));
+  assert.equal(commandsPath('/p', 'project', {}, '/h', RULES_COMMAND_FILE), path.join('/p', '.claude', 'commands', 'spookling-rules.md'));
+});
+
+test('Codex SessionStart may return up to 4000 tokens, like the prompt hook (project rules plus the brief)', () => {
+  const h = codexHandlers('/x/hooks');
+  assert.equal(h.SessionStart.additionalContextLimit, 4000);
 });

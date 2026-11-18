@@ -52,9 +52,9 @@ process.stdin.on('end', async () => {
   if (cloud) {
     cloudOn = await cloud.on(p);
     if (cloudOn && start) {
-      const brief = await cloud.brief(p);
-      if (brief) return emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: brief },
-        systemMessage: said('ready', 'project brief from your cloud memory') });
+      const b = await cloud.brief(p); // the rules first and whole, then the brief, within the same cap as Claude Code
+      if (b) return emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: b.context },
+        systemMessage: said('ready', `${cloud.startMessage(b)} from your cloud memory`) });
     }
     if (cloudOn && !start) {
       const r = await cloud.retrieve(p);

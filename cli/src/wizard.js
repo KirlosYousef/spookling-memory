@@ -12,7 +12,7 @@ import { flyOnce } from './ghost.js';
 import { ALLOW_SHARE_QUESTION, forgetAdded, pendingShareRules, recordAdded, addedRules, setShareDeclined, shareDeclined } from './allow-share.js';
 import { stage } from './stage.js';
 import {
-  HOOK_FILES, CLOUD_HOOK_FILES, MCP_NAME, addHooks, addMcp, addPermissions, claudeDesktopConfigPath, commandsPath, hasPermissions, isOurShareCommand, removePermissions, shareCommand, SHARE_TOOLS, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
+  HOOK_FILES, CLOUD_HOOK_FILES, MCP_NAME, addHooks, addMcp, addPermissions, claudeDesktopConfigPath, commandsPath, hasPermissions, isOurShareCommand, isOurRulesCommand, removePermissions, shareCommand, rulesCommand, RULES_COMMAND_FILE, SHARE_TOOLS, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
   wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath, STATUS_FILE, addStatusLine, removeStatusLine, isOurStatus,
   addCodexMcp, codexConfigPath, codexEntry, codexMcpEntry, codexMcpToml, installVersions, mcpCommand, ourHookCommands, removeCodexMcp,
 } from './hooks.js';
@@ -365,7 +365,7 @@ function vendorUploader(from, dir) {
   const lib = join(dir, 'hooks', 'lib');
   mkdirSync(lib, { recursive: true });
   writeFileSync(join(lib, 'package.json'), '{ "type": "module" }\n');
-  for (const f of ['cloud.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js', 'repo-url.js', 'cloud-retrieve.js', 'cloud-retrieve-invoke.js']) cpSync(join(src, f), join(lib, f));
+  for (const f of ['cloud.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js', 'repo-url.js', 'cloud-retrieve.js', 'cloud-retrieve-invoke.js', 'rules.js', 'delete.js']) cpSync(join(src, f), join(lib, f));
 }
 
 export function install(from, dir) {
@@ -912,6 +912,7 @@ async function stepWire(ctx) {
     });
     await stepAllowShare(ctx, sp);
     await shareCommandFile(ctx);
+    await rulesCommandFile(ctx);
   }
 }
 
@@ -961,6 +962,15 @@ async function shareCommandFile(ctx) {
   if (have === text) return ok(`${rel(ctx, cp)} is up to date`);
   if (have && !isOurShareCommand(have)) return info(`${rel(ctx, cp)} is yours; left it as it is.`);
   await write(ctx, cp, text, { what: '/spookling-share command', redo: () => text });
+}
+
+// /spookling-rules: the file is ours or it is not written. Typing it is not a yes: the MCP dialog or the terminal still asks.
+async function rulesCommandFile(ctx) {
+  const cp = commandsPath(ctx.project, ctx.scope, undefined, undefined, RULES_COMMAND_FILE), text = rulesCommand();
+  const have = readText(cp);
+  if (have === text) return ok(`${rel(ctx, cp)} is up to date`);
+  if (have && !isOurRulesCommand(have)) return info(`${rel(ctx, cp)} is yours; left it as it is.`);
+  await write(ctx, cp, text, { what: '/spookling-rules command', redo: () => text });
 }
 
 // Ask the server for its stats.
@@ -1275,6 +1285,8 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
   if (harness !== 'codex') {
     const cp = commandsPath(project, scope);
     if (isOurShareCommand(readText(cp))) { rmSync(cp, { force: true }); ok(`removed ${rel(ctx, cp)}`); }
+    const rp = commandsPath(project, scope, undefined, undefined, RULES_COMMAND_FILE);
+    if (isOurRulesCommand(readText(rp))) { rmSync(rp, { force: true }); ok(`removed ${rel(ctx, rp)}`); }
     const desktopPath = claudeDesktopConfigPath();
     await mergeFile(ctx, desktopPath, removeMcp, {
       what: `removed MCP server ${MCP_NAME} from the Claude desktop app`,

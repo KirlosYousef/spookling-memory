@@ -229,15 +229,17 @@ test('a Codex config.toml that is not valid TOML is refused and left as it was; 
   assert.equal(readFileSync(join(t.home, '.spookling', 'backups', stamp, encodeName(t.file)), 'utf8'), fine);
 });
 
-test('init --allow-share adds the five share tools and /spookling-share; no flag or --no-allow-share adds neither tool; uninstall removes ours only', posix, async () => {
+test('init --allow-share adds the six share tools and /spookling-share (and /spookling-rules); no flag or --no-allow-share adds neither tool; uninstall removes ours only', posix, async () => {
   const { existsSync } = await import('node:fs');
   const { SHARE_TOOLS } = await import('../src/hooks.js');
   const cmd = (home) => join(home, '.claude', 'commands', 'spookling-share.md');
+  const rulesCmd = (home) => join(home, '.claude', 'commands', 'spookling-rules.md');
   for (const args of [[], ['--no-allow-share']]) {
     const r = await sandbox(['init', '--scope', 'user', '--no-ghost', '--no-anim', ...args], { files: { '.claude/settings.json': THEIRS } });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.deepEqual(JSON.parse(readFileSync(claudeSettings(r.home), 'utf8')).permissions, THEIRS.permissions, args.join(' ') || 'no flag');
     assert.ok(existsSync(cmd(r.home)), 'the command is written either way');
+    assert.ok(existsSync(rulesCmd(r.home)), '/spookling-rules too');
   }
   const home = tmp('spk-sb-'), project = tmp('spk-sbp-');
   let r = await sandbox(['init', '--scope', 'user', '--no-ghost', '--no-anim', '--allow-share'], { home, project, files: { '.claude/settings.json': THEIRS } });
@@ -259,6 +261,7 @@ test('init --allow-share adds the five share tools and /spookling-share; no flag
   s = JSON.parse(readFileSync(claudeSettings(home), 'utf8'));
   assert.deepEqual(s.permissions.allow, ['Bash(git status)', 'mcp__spookling-memory__memory_delete']);
   assert.ok(!existsSync(cmd(home)), 'the command file is gone');
+  assert.ok(!existsSync(rulesCmd(home)), 'and /spookling-rules');
 });
 
 test('uninstall keeps a share rule the user had before init, and removes only the ones Spookling added', posix, async () => {
@@ -274,9 +277,9 @@ test('uninstall keeps a share rule the user had before init, and removes only th
   assert.deepEqual(JSON.parse(readFileSync(claudeSettings(home), 'utf8')).permissions.allow, ['Bash(git status)', SHARE_TOOLS[0]]);
 });
 
-test('update and init --update add only the new team_orgs rule for a recorded yes; a no stays a no; uninstall removes it', posix, async () => {
+test('update and init --update add only the new team_orgs and project_rules rules for a recorded yes; a no stays a no; uninstall removes it', posix, async () => {
   const { SHARE_TOOLS } = await import('../src/hooks.js');
-  const old = SHARE_TOOLS.slice(0, 4), added = SHARE_TOOLS[4];
+  const old = SHARE_TOOLS.slice(0, 4), added = SHARE_TOOLS.slice(4);
   const home = tmp('spk-sb-'), project = tmp('spk-sbp-');
   let r = await sandbox(['init', '--scope', 'user', '--no-ghost', '--no-anim', '--allow-share'], { home, project, files: { '.claude/settings.json': THEIRS } });
   assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -288,7 +291,7 @@ test('update and init --update add only the new team_orgs rule for a recorded ye
   const j = JSON.parse(readFileSync(rec, 'utf8')); j.added[f] = old; writeFileSync(rec, JSON.stringify(j));
   r = await sandbox(['init', '--update'], { home, project });
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.deepEqual(JSON.parse(readFileSync(f, 'utf8')).permissions.allow, [...THEIRS.permissions.allow, ...old, added]);
+  assert.deepEqual(JSON.parse(readFileSync(f, 'utf8')).permissions.allow, [...THEIRS.permissions.allow, ...old, ...added]);
   assert.deepEqual(JSON.parse(readFileSync(rec, 'utf8')).added[f], SHARE_TOOLS);
   r = await sandbox(['uninstall', '--scope', 'user'], { home, project });
   assert.equal(r.status, 0, r.stdout + r.stderr);

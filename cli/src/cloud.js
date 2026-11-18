@@ -7,8 +7,9 @@ import { readCredentials } from './credentials.js';
 export const DEFAULT_API_URL = 'https://api.spookling.com';
 
 export class CloudError extends Error {
-  constructor(message, { status = null, code = null, reason = null, retryAfter = null } = {}) {
+  constructor(message, { status = null, code = null, reason = null, retryAfter = null, details = null } = {}) {
     super(message);
+    this.details = details;
     this.name = 'CloudError';
     this.status = status;
     this.code = code;
@@ -128,6 +129,7 @@ async function request(base, path, { method, token, body, fetchImpl, timeoutMs }
       code: err.code || null,
       reason: err.details?.reason || null,
       retryAfter: retry ?? retryAfter(err.details?.retryAfter),
+      details: err.details && typeof err.details === 'object' ? err.details : null,
     });
   }
   if (!json || json.success !== true || !('data' in json)) {
@@ -135,6 +137,8 @@ async function request(base, path, { method, token, body, fetchImpl, timeoutMs }
   }
   return json.data;
 }
+
+const rulesPath = (orgId, projectKey) => `/memory/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectKey)}/rules`;
 
 export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, timeoutMs = 15000, token, home = homedir(), loginUrl } = {}) {
   const auth = () => token || readCredentials({ env, home }).token;
@@ -233,6 +237,21 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
     },
     projectContext({ projectKey, token: t, timeoutMs } = {}) {
       return call(`/memory/context?${new URLSearchParams({ projectKey })}`, { method: 'GET', token: t || auth(), ...(timeoutMs ? { timeoutMs } : {}) });
+    },
+    // project rules (written only after the user confirmed in a dialog or a terminal; the API does not know which)
+    getRules({ orgId, projectKey, token: t } = {}) {
+      return call(`${rulesPath(orgId, projectKey)}`, { method: 'GET', token: t || auth() });
+    },
+    ruleHistory({ orgId, projectKey, ruleId, token: t } = {}) {
+      return call(`${rulesPath(orgId, projectKey)}/${encodeURIComponent(ruleId)}/history`, { method: 'GET', token: t || auth() });
+    },
+    setRule({ orgId, projectKey, text, replaces, expectedVersion, via = 'cli', sessionId, token: t } = {}) {
+      const body = { text, via, ...(replaces && { replaces, expectedVersion }), ...(sessionId && { sessionId: String(sessionId).slice(0, 200) }) };
+      return call(rulesPath(orgId, projectKey), { method: 'POST', token: t || auth(), body });
+    },
+    removeRule({ orgId, projectKey, ruleId, expectedVersion, via = 'cli', sessionId, token: t } = {}) {
+      const body = { expectedVersion, via, ...(sessionId && { sessionId: String(sessionId).slice(0, 200) }) };
+      return call(`${rulesPath(orgId, projectKey)}/${encodeURIComponent(ruleId)}/remove`, { method: 'POST', token: t || auth(), body });
     },
     getSession({ sid, after, token: t } = {}) {
       const q = new URLSearchParams();

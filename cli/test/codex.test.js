@@ -48,7 +48,8 @@ test('Codex shell commands quote paths; Windows uses a quoted native path', () =
     assert.equal(h.args, undefined, 'Codex must receive a shell command, not Claude exec form');
   }
   assert.equal(handlers.UserPromptSubmit.additionalContextLimit, 4000, 'recall must not spill to disk at the 2,500 token default');
-  assert.equal(handlers.Stop.additionalContextLimit, undefined, 'only the event that returns context may set the limit');
+  assert.equal(handlers.SessionStart.additionalContextLimit, 4000, 'project rules and the brief must not spill either');
+  assert.equal(handlers.Stop.additionalContextLimit, undefined, 'only the events that return context may set the limit');
 });
 
 test('real Codex command: health, recall, capture and compaction reuse the HTTP API with truthful ghost output', async () => {

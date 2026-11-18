@@ -20,7 +20,7 @@ const run = (t, answer, tty = true) => {
   return offerAllowShare({ home: t.home, cwd: t.cwd, env: t.env, tty, write: () => {}, confirm: async (q) => { asked.push(q); return answer; } }).then((r) => ({ r, asked }));
 };
 
-test('login offers once: yes adds the five tools, no is remembered', async () => {
+test('login offers once: yes adds the six tools, no is remembered', async () => {
   const t = setup();
   let { r, asked } = await run(t, true);
   assert.equal(r, true);
@@ -53,7 +53,7 @@ test('login adds only the new rule for an earlier yes, without asking; a decline
   const { r, asked } = await run(t, true);
   assert.equal(r, true);
   assert.deepEqual(asked, [], 'no question');
-  assert.deepEqual(JSON.parse(readFileSync(t.file, 'utf8')).permissions.allow, ['Bash(ls:*)', ...old, SHARE_TOOLS[4]]);
+  assert.deepEqual(JSON.parse(readFileSync(t.file, 'utf8')).permissions.allow, ['Bash(ls:*)', ...old, ...SHARE_TOOLS.slice(4)]);
   assert.deepEqual(JSON.parse(readFileSync(join(t.home, '.spookling', 'share-allow.json'), 'utf8')).added[t.file], SHARE_TOOLS);
   assert.equal((await run(t, true)).r, false, 'nothing more to add');
 
@@ -61,7 +61,15 @@ test('login adds only the new rule for an earlier yes, without asking; a decline
   const u = setup({ rules: [SHARE_TOOLS[0]] });
   recordAdded(u.file, SHARE_TOOLS.slice(0, 4), u.home);
   await run(u, true);
-  assert.deepEqual(JSON.parse(readFileSync(u.file, 'utf8')).permissions.allow, [SHARE_TOOLS[0], SHARE_TOOLS[4]]);
+  assert.deepEqual(JSON.parse(readFileSync(u.file, 'utf8')).permissions.allow, [SHARE_TOOLS[0], ...SHARE_TOOLS.slice(4)]);
+
+  // someone who said yes to the five tools before project_rules: just project_rules, quietly
+  const five = SHARE_TOOLS.slice(0, 5);
+  const v = setup({ rules: [...five] });
+  recordAdded(v.file, five, v.home);
+  const rv = await run(v, true);
+  assert.deepEqual([rv.r, rv.asked], [true, []]);
+  assert.deepEqual(JSON.parse(readFileSync(v.file, 'utf8')).permissions.allow, [...five, 'mcp__spookling-memory__project_rules']);
 
   const d = setup({ rules: [...old] });
   setShareDeclined(true, d.home);

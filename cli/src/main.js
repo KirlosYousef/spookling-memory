@@ -17,6 +17,7 @@ import { flushQueued } from './push.js';
 import { deleteAllSessions, deleteSession, formatDelete } from './delete.js';
 import { currentSession, setProjectAutoShare, setSessionShare, shareStatus, webUrl } from './share.js';
 import { shareTarget } from './team.js';
+import { rulesCommand } from './rules.js';
 
 const HELP = `Spookling Memory
 
@@ -45,6 +46,11 @@ const HELP = `Spookling Memory
   spookling autoshare <project> on|off [--org <id or name>] [--backfill]   share every new session of a project
   spookling delete <session id> [--yes]   delete one uploaded session from the cloud (local memory is kept; asks first)
   spookling delete --all [--yes]          delete all your uploaded sessions from the cloud (type DELETE to confirm)
+  spookling rules [--org <id or name>]   this project's rules: team rules every AI session on the project follows
+  spookling rules set "<rule>" [--replace <id>] [--org <id or name>]   add a rule, or change one (shows it and asks y/N)
+  spookling rules remove <id> [--org <id or name>]   remove a rule (asks y/N; its history stays)
+  spookling rules history <id> [--org <id or name>]  every version of a rule, newest first
+                            set and remove always ask at a terminal, and change nothing without one
 
   --org: share and autoshare on use your only org, or your saved default if it is still one of yours; with several orgs
          and no --org they ask which one at a terminal and need --org otherwise;
@@ -111,7 +117,7 @@ const usage = (text) => { throw new UsageError(text); };
 // the words of a command that are not flags or flag values
 const operands = (args, valued = ['org', 'limit']) => args.slice(1).filter((a, i, all) => !a.startsWith('--') && !valued.some((n) => all[i - 1] === `--${n}`));
 // commands that talk to the API with the saved login: a different SPOOKLING_API_URL is called out before they run
-const AUTHENTICATED = new Set(['logout', 'whoami', 'orgs', 'tokens', 'refresh', 'sessions', 'share', 'unshare', 'autoshare', 'delete']);
+const AUTHENTICATED = new Set(['logout', 'whoami', 'orgs', 'tokens', 'refresh', 'sessions', 'share', 'unshare', 'autoshare', 'delete', 'rules']);
 
 // several orgs and none named: the user picks (never a saved default that may be stale); no terminal means --org is required
 async function resolveOrg(resolve, orgArg, { ask, tty }, verb) {
@@ -229,6 +235,7 @@ async function route(args, deps) {
     init, refresh, flush: flushQueued, login, logout, whoami, orgs, orgsDefault, tokens, status, update, restore, initUpdate, uninstall, backfill,
     delete: { one: deleteSession, all: deleteAllSessions },
     share: { status: shareStatus, session: setSessionShare, project: setProjectAutoShare },
+    rules: rulesCommand,
     ...Object.fromEntries(Object.entries(deps).filter(([, v]) => typeof v === 'function' || (v && typeof v === 'object' && ('status' in v || 'one' in v)))),
   };
   const cmd = !args[0] || ['-h', '--help'].includes(args[0]) ? 'help' : args[0];
@@ -272,6 +279,13 @@ async function route(args, deps) {
     }
     case 'sessions': case 'share': case 'unshare': case 'autoshare': return sharing(cmd, args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'delete': return deleteCommand(args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
+    case 'rules': {
+      const replace = flag(args, 'replace', 'needs a rule id');
+      const words = operands(args, ['org', 'replace']);
+      const sub = ['set', 'remove', 'history', 'list'].includes(words[0]) ? words.shift() : words.length ? words.shift() || '?' : '';
+      return fns.rules({ sub, words, org, replace, cwd, env, home, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY),
+        ...(deps.confirm && { confirm: deps.confirm }), ...(deps.choose && { choose: deps.choose }), ...(deps.cloud && { cloud: deps.cloud }) });
+    }
     case 'login': return fns.login({ home, cwd, apiUrl });
     case 'logout': return fns.logout({ home });
     case 'orgs': {
