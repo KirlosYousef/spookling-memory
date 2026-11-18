@@ -276,6 +276,7 @@ npx spookling login                # sign in in the browser; init never logs in
 npx spookling logout               # forget the saved token
 npx spookling whoami               # who you are, the API and your default org
 npx spookling orgs                 # the orgs you belong to
+npx spookling orgs default [org]   # show your default org, or set it by name or id (it pays for and receives your PRIVATE memory; a repo's shared project memory is searched across all your orgs)
 npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `--all` to revoke
 npx spookling refresh              # pull the org feeds into the local cache, and retry queued uploads and shares
 npx spookling sessions [project]   # your newest 20 uploaded sessions (--all, --limit N)
@@ -438,6 +439,7 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 
 ```bash
 spookling orgs                          # your orgs, as id and name
+spookling orgs default [<org name or id>]   # the default org as the API reports it; with an org, change it (two orgs with one name: pass the id)
 spookling sessions [project] [--limit N | --all]   # newest 20 uploaded sessions: private, or shared with which org; plus auto-share rules
 spookling share [<session id> | --last] [--org <id or name>] [--yes]   # no id: the current session, else this project's newest
 spookling unshare <session id> [--org <id or name>]   # all orgs without --org

@@ -8,7 +8,7 @@ import { init, initUpdate, status, uninstall } from './wizard.js';
 import { update } from './update.js';
 import { restore } from './restore.js';
 import { backfill } from './backfill.js';
-import { login, logout, orgs, tokens, whoami } from './account.js';
+import { login, logout, orgs, orgsDefault, tokens, whoami } from './account.js';
 import { VERSION, clean, originWarning } from './cloud.js';
 import { installedMode } from './cloud-retrieve.js';
 import { updateAvailable } from './registry.js';
@@ -32,6 +32,8 @@ const HELP = `Spookling Memory
   spookling logout          forget the saved token
   spookling whoami          who the saved login is, its API and default org
   spookling orgs            the orgs you belong to (id and name; use either with --org)
+  spookling orgs default [<org name or id>]   show your default org, or set it (it pays for and receives your PRIVATE memory;
+                            a repo's shared project memory is searched across all your orgs)
   spookling tokens          your CLI tokens: label, created, last used, and this device
   spookling tokens revoke <id>   revoke one (this device's token also logs you out)
   spookling tokens revoke --all  revoke every token, this device included
@@ -224,7 +226,7 @@ function tokensCommand(args, { fns, home }) {
 
 async function route(args, deps) {
   const fns = {
-    init, refresh, flush: flushQueued, login, logout, whoami, orgs, tokens, status, update, restore, initUpdate, uninstall, backfill,
+    init, refresh, flush: flushQueued, login, logout, whoami, orgs, orgsDefault, tokens, status, update, restore, initUpdate, uninstall, backfill,
     delete: { one: deleteSession, all: deleteAllSessions },
     share: { status: shareStatus, session: setSessionShare, project: setProjectAutoShare },
     ...Object.fromEntries(Object.entries(deps).filter(([, v]) => typeof v === 'function' || (v && typeof v === 'object' && ('status' in v || 'one' in v)))),
@@ -272,7 +274,12 @@ async function route(args, deps) {
     case 'delete': return deleteCommand(args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'login': return fns.login({ home, cwd, apiUrl });
     case 'logout': return fns.logout({ home });
-    case 'orgs': return fns.orgs({ home });
+    case 'orgs': {
+      const rest = operands(args, []);
+      if (rest[0] === undefined) return fns.orgs({ home });
+      if (rest[0] !== 'default') usage('usage: spookling orgs | spookling orgs default [<org name or id>]');
+      return fns.orgsDefault({ home, query: rest.slice(1).join(' '), tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY), ...(deps.choose && { choose: deps.choose }) });
+    }
     case 'tokens': return tokensCommand(args, ctx);
     case 'whoami': {
       if (!deps.whoami) await updateAvailable({ home, current: VERSION, env }).catch(() => null); // refreshes the daily cache, at most 2 s

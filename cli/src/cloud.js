@@ -213,6 +213,13 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
     listOrgs({ token: t } = {}) {
       return call('/cli/orgs', { method: 'GET', token: t || auth() });
     },
+    // the org that pays for and receives your private memory: { orgId, source, chosenOrgId }
+    getDefaultOrg({ token: t } = {}) {
+      return call('/memory/default-org', { method: 'GET', token: t || auth() });
+    },
+    setDefaultOrg({ orgId, token: t } = {}) {
+      return call('/memory/default-org', { method: 'PUT', token: t || auth(), body: { orgId } });
+    },
     feed({ orgId, since, cursor, token: t } = {}) {
       const q = new URLSearchParams();
       if (since) q.set('since', since);
