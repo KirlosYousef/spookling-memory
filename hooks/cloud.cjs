@@ -40,5 +40,8 @@ exports.brief = async (p) => {
 };
 
 // The line the user sees: what was added, in words.
-exports.startMessage = (b) => (b.rules ? (b.brief ? 'project rules and brief' : 'project rules') : 'project brief')
-  + (b.rulesCached ? ' (rules from the offline copy)' : '');
+exports.startMessage = (b) => {
+  if (!b.rules) return 'project brief';
+  const rules = b.rulesCached ? 'project rules (offline copy)' : 'project rules';
+  return b.brief ? `${rules} and brief` : rules;
+};

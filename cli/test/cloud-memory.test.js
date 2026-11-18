@@ -431,7 +431,7 @@ test('Claude Code SessionStart hook: the rules before the brief, the rules alone
   const off = JSON.parse((await start('s3')).out);
   assert.match(off.hookSpecificOutput.additionalContext, /^\(Cached copy of the project rules/);
   assert.ok(off.hookSpecificOutput.additionalContext.endsWith(RULES));
-  assert.equal(off.systemMessage, '👻 project rules (rules from the offline copy) from Spookling memory');
+  assert.equal(off.systemMessage, '👻 project rules (offline copy) from Spookling memory');
 });
 
 test('Codex SessionStart in cloud mode: the rules before the brief, and the cached rules offline', async () => {
@@ -446,7 +446,7 @@ test('Codex SessionStart in cloud mode: the rules before the brief, and the cach
   } finally { await api.close(); }
   const off = JSON.parse((await start('cx2')).out);
   assert.match(off.hookSpecificOutput.additionalContext, /^\(Cached copy of the project rules/);
-  assert.match(off.systemMessage, /project rules \(rules from the offline copy\) from your cloud memory/);
+  assert.match(off.systemMessage, /project rules \(offline copy\) from your cloud memory/);
 });
 
 test('Codex hook in cloud mode: prompt from the cloud, brief at SessionStart, local server last, silence when none', async () => {
