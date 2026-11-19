@@ -34,7 +34,7 @@ function statusAt({ projectIsHome, projectHooks = false, cache }) {
   `;
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8', timeout: 30000, cwd: project,
-    env: { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, CLAUDE_CONFIG_DIR: '', CODEX_HOME: '', NO_COLOR: '1', NODE_TEST_CONTEXT: '' },
+    env: { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, CLAUDE_CONFIG_DIR: '', CODEX_HOME: '', NO_COLOR: '1', NODE_TEST_CONTEXT: '', CI: '', SPOOKLING_NO_UPDATE_CHECK: '' }, // CI turns the update check off; this test is about the notice
   });
   return r.stdout + r.stderr;
 }

@@ -482,7 +482,7 @@ test('Claude Code gets a SessionStart hook in cloud mode only, and uninstall rec
   const local = hookHandlers(dir), cloud = hookHandlers(dir, undefined, { cloud: true });
   assert.equal('SessionStart' in local, false);
   assert.deepEqual(Object.keys(cloud).sort(), [...Object.keys(local), ...Object.keys(CLOUD_HOOK_FILES)].sort());
-  assert.deepEqual(cloud.SessionStart.args, [`${dir}/session-start.js`]);
+  assert.deepEqual(cloud.SessionStart.args, [join(dir, 'session-start.js')]);
   assert.ok(isOurs(cloud.SessionStart));
   assert.deepEqual(Object.keys(addHooks({}, cloud).hooks).sort(), Object.keys(cloud).sort());
 });
