@@ -57,7 +57,7 @@ const base = (extra = {}) => {
       home: tmp(), cwd: tmp(), current: '0.2.0', write: c.write,
       lookup: async () => '0.2.0',
       run: (cmd, args, o) => { calls.push({ cmd, args, o }); return { status: 0 }; },
-      isStale: () => false, detect: async () => ({ targets: [{}] }), reinit: async () => 0,
+      isStale: () => false, wiredAt: () => [], detect: async () => ({ targets: [{}] }), reinit: async () => 0,
       ...extra,
     },
   };
@@ -127,9 +127,9 @@ test('update --version: validated as semver; a downgrade needs --force', async (
 
 test('update on the latest version still re-wires when the hooks use an older folder', async () => {
   const seen = [];
-  let r = base({ isStale: () => true, reinit: async (o) => { seen.push(o.project); return 0; } });
+  let r = base({ isStale: () => true, wiredAt: () => ['0.1.9', '0.2.0'], reinit: async (o) => { seen.push(o.project); return 0; } });
   assert.equal(await update(r.opts), 0);
-  assert.match(text(r.c), /is the latest\.\nYour hooks still use an older version folder; re-wiring them to this one\./);
+  assert.match(text(r.c), /is the latest\.\nYour hooks, MCP entries or launcher still point at 0\.1\.9; re-wiring them to 0\.2\.0\./);
   assert.deepEqual(seen, [r.opts.cwd]);
   assert.deepEqual(r.calls, []);
   seen.length = 0;
@@ -228,6 +228,7 @@ test('an old server is stopped only when its command line says it is ours, and t
     const stopped = [];
     const ctx = { project, problems: [], skipped: [], written: [], say: async () => {}, auto: {
       home, ps: () => command, stop: (pid) => { stopped.push(pid); return true; }, alive: () => false, pause: async () => {},
+      listener: () => null,
     } };
     await stopOldServers(ctx);
     return { stopped, ctx };
@@ -244,6 +245,36 @@ test('an old server is stopped only when its command line says it is ours, and t
   assert.deepEqual(r.stopped, [], 'a command line we could not read is not ours');
   r = await run(ours(VERSION));
   assert.deepEqual(r.stopped, [], 'the current version keeps running');
+});
+
+test('an old server with no pid file, or a stale one, is found by its port and restarted in its own folder', async () => {
+  const home = tmp();
+  const project = join(home, 'work');
+  mkdirSync(join(project, '.memory'), { recursive: true });
+  const ours = (v) => `${home}/.spookling-memory/${v}/server/.venv/bin/python3 ${home}/.spookling-memory/${v}/server/.venv/bin/spookling-memory serve --folder .memory --port 7447`;
+  const run = async ({ command, cwd = home, stalePid = false }) => {
+    if (stalePid) writeFileSync(join(home, '.memory', 'server.pid'), '999999\n');
+    const stopped = [], dead = new Set();
+    const ctx = { project, problems: [], skipped: [], written: [], say: async () => {}, auto: {
+      home, ps: () => command, cwd: () => cwd, listener: () => 4242,
+      stop: (pid) => { stopped.push(pid); dead.add(pid); return true; }, alive: (pid) => !dead.has(pid), pause: async () => {},
+    } };
+    await stopOldServers(ctx);
+    return { stopped, ctx };
+  };
+  mkdirSync(join(home, '.memory'), { recursive: true });
+  let r = await run({ command: ours('0.2.0'), stalePid: true });
+  assert.deepEqual(r.stopped, [4242], 'the 0.2.0 server on the port is stopped though its pid file is stale');
+  assert.equal(r.ctx.serverHome, home, 'restarted in the folder it ran from, where its .memory is');
+  assert.equal(r.ctx.auto.start, true);
+  assert.equal(existsSync(join(home, '.memory', 'server.pid')), false, 'the stale pid file is removed');
+  r = await run({ command: ours(VERSION) });
+  assert.deepEqual(r.stopped, [], 'the current version keeps running');
+  r = await run({ command: '/usr/bin/python3 -m http.server 7447' });
+  assert.deepEqual(r.stopped, [], 'not ours: left alone');
+  r = await run({ command: ours('0.2.0'), cwd: null });
+  assert.deepEqual(r.stopped, [], 'without its folder, a restart would open the wrong memory: not stopped');
+  assert.match(r.ctx.problems.join(' '), /stop pid 4242, then run spookling update again/);
 });
 
 // ---- detecting what is wired, and what was chosen

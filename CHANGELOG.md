@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.3 (19 Nov 2026)
+
+- Cloud mode. `init` now first asks "How should Spookling build memory?": log in and use your Spookling plan (no key, no local tagger, no server to start), or enter API keys as before. In cloud mode the prompt hooks (Claude Code and Codex) ask Spookling for memory first, within about 1.8 s, and fall back to the local server (or say nothing) when offline, logged out, slow or unavailable. Uninformative prompts ("ok", "continue") are skipped on your machine, a repeated prompt is answered from a 60 s cache, and each session is not shown the same item twice. A SessionStart hook injects the project brief once per session. The `memory_retrieve` tool goes cloud first through node, so the token never enters the Python server. `spookling status` shows `mode: cloud, logged in as ..., org ...`. `init --cloud` and `init --keys` skip the question; the mode is stored in `~/.spookling/install.json`. Question text is never logged.
+- `spookling update` also finds an old memory server by the port it listens on (macOS and Linux), so one with no pid file, or a stale one, no longer keeps answering after an update. It is restarted in the folder it ran from; if that folder cannot be read, the update says which pid to stop.
+- A turn now keeps up to 30,000 characters (it was 16,000) before it is cut, and the backend accepts up to 32,000. Uploads are sent in batches of at most 200 turns or about 500,000 characters, so long turns stay under the API's request size.
+- `spookling orgs default [org]` shows the default org as the API reports it, or changes it by name or id. An ambiguous name lists the matching ids instead of guessing. `orgs` and `whoami` mark the live default and fall back to the saved one offline.
+- Each uploaded session carries the project's git remote (`repoUrl`), with credentials and query stripped and masked, so the cloud can tie clones of one repo to one project. It is omitted when there is no remote and cached per project for a day.
+- `spookling status` lists each wiring location once when the project is your home folder, reports a folder wired in cloud mode, and the update notice follows one rule from one version source.
+
 ## 0.2.2 (10 Nov 2026)
 
 ### Sharing

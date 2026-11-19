@@ -41,6 +41,7 @@ test('init copies the uploader next to the hooks', async () => {
   assert.equal(existsSync(join(to, 'hooks', 'lib', 'push.js')), true);
   assert.equal(existsSync(join(to, 'hooks', 'lib', 'team.js')), true);
   assert.equal(existsSync(join(to, 'hooks', 'lib', 'team-invoke.js')), true);
+  assert.equal(existsSync(join(to, 'hooks', 'lib', 'repo-url.js')), true);
   assert.equal(JSON.parse(readFileSync(join(to, 'hooks', 'lib', 'package.json'), 'utf8')).type, 'module');
   const home = homeOf();
   writeCredentials({ token: 'spk_copied', user: { name: 'Ada' } }, { home });
@@ -50,7 +51,8 @@ test('init copies the uploader next to the hooks', async () => {
   assert.equal(ran.out, '');
   const state = await waitFor(() => {
     const path = join(home, '.spookling', 'upload-state.json');
-    return existsSync(path) ? readFileSync(path, 'utf8') : '';
+    const text = existsSync(path) ? readFileSync(path, 'utf8') : '';
+    return text.includes('Make the sync idempotent') ? text : ''; // the file first appears with the cached repo remote
   });
   assert.match(state, /Make the sync idempotent/);
   assert.deepEqual(readFileSync(logPath), before);

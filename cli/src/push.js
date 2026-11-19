@@ -9,10 +9,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { CloudError, clean, createCloud } from './cloud.js';
 import { readCredentials, writeFileSecure } from './credentials.js';
 import { maskSecrets, maskTurn } from './mask.js';
+import { repoUrlFor } from './repo-url.js';
 import { SHARE_JOB_MAX_AGE_MS, StateBusy, accountScope, claimSession, noteUpload, readState, shareJobs, takeShareFailures, updateState } from './upload-state.js';
 
 const LIST_PAGES = 20; // pages of your sessions searched for one when the server cannot be asked for it by id
 const BATCH = 200; // turns per POST: the API's page size
+const BATCH_CHARS = 500_000; // and characters per POST: 200 long turns would pass the API's request size limit
 const TITLE_MAX = 120; // the API cuts a longer title
 const PROJECT_MAX = 100; // the API refuses a longer project
 // whole blocks the tool or harness injected: nothing a person typed
@@ -279,10 +281,21 @@ async function shareToOrg(client, token, job) {
 async function sendSession(client, item, token) {
   await client.upsertSession({ sid: item.sid, session: item.session, token });
   let last = null;
-  for (let i = 0; i < item.turns.length; i += BATCH) {
-    last = await client.postTurns({ sid: item.sid, turns: item.turns.slice(i, i + BATCH), token });
+  for (const turns of batches(item.turns)) {
+    last = await client.postTurns({ sid: item.sid, turns, token });
   }
   return last;
+}
+
+// Consecutive turns, at most BATCH of them and about BATCH_CHARS characters; a turn is never split.
+export function* batches(turns) {
+  let from = 0, chars = 0;
+  for (let i = 0; i < turns.length; i += 1) {
+    const n = turns[i].text.length;
+    if (i > from && (i - from >= BATCH || chars + n > BATCH_CHARS)) { yield turns.slice(from, i); from = i; chars = 0; }
+    chars += n;
+  }
+  if (from < turns.length) yield turns.slice(from);
 }
 
 function isConflict(e) {
@@ -360,6 +373,17 @@ function buildWork(state, projected) {
     work.set(item.sid, { sid: item.sid, session: item.session, turns, ...(p ? { mode: item.mode, link } : {}) });
   }
   return [...work.values()];
+}
+
+// Add the project's git remote to the sessions of this project that are about to go up. `repoUrl` is a value the caller already
+// has; otherwise it is read (cached) from the git repo around `projectDir`. Sessions of other projects (older queue entries)
+// are left alone, and a project with no remote sends no repoUrl at all.
+async function stampRepoUrl(items, { repoUrl, projectDir, project, home, env }) {
+  const mine = items.filter((item) => !item.session.repoUrl && (!project || item.session.project === String(project).slice(0, PROJECT_MAX)));
+  if (!mine.length) return;
+  const url = typeof repoUrl === 'string' ? repoUrl : await repoUrlFor(projectDir, { home, env });
+  if (!url) return;
+  for (const item of mine) item.session = { ...item.session, repoUrl: url };
 }
 
 const queueItem = (st, item) => { st.queue = [...st.queue.filter((q) => q.sid !== item.sid), item]; };
@@ -571,18 +595,18 @@ async function flushShares({ client, creds, ctx, explicit = false }) {
 }
 
 export async function pushFromLog({
-  logPath, logText, home = homedir(), env = process.env, cloud, project = '', sessionId = '', forks,
+  logPath, logText, home = homedir(), env = process.env, cloud, project = '', sessionId = '', forks, repoUrl, projectDir,
   sleep, maxWaitMs, timeoutMs, onProgress, notify, status, pace,
   log = (m) => process.stderr.write(`${m}\n`),
 } = {}) {
   try {
-    return await upload({ logPath, logText, home, env, cloud, project, sessionId, forks, sleep, maxWaitMs, timeoutMs, log, onProgress, notify, status, pace });
+    return await upload({ logPath, logText, home, env, cloud, project, sessionId, forks, repoUrl, projectDir, sleep, maxWaitMs, timeoutMs, log, onProgress, notify, status, pace });
   } catch {
     return { ok: false, queued: true, pushed: 0 };
   }
 }
 
-async function upload({ logPath, logText, home, env, cloud, project, sessionId, forks, sleep, maxWaitMs, timeoutMs, log, onProgress, notify, status, pace }) {
+async function upload({ logPath, logText, home, env, cloud, project, sessionId, forks, repoUrl, projectDir, sleep, maxWaitMs, timeoutMs, log, onProgress, notify, status, pace }) {
   let raw = logText;
   if (raw == null && logPath) {
     try { raw = readFileSync(logPath, 'utf8'); } catch { return { ok: true, pushed: 0 }; }
@@ -612,6 +636,7 @@ async function upload({ logPath, logText, home, env, cloud, project, sessionId, 
     session: { ...s.session, project: String(project || s.session.project || '').slice(0, PROJECT_MAX), title: String(s.session.title || '').slice(0, TITLE_MAX) },
   }));
   const items = buildWork(state, projected);
+  await stampRepoUrl(items, { repoUrl, projectDir: projectDir ?? (logPath ? dirname(dirname(logPath)) : ''), project, home, env });
   if (!client) {
     if (items.length) await persist(ctx, (st) => { for (const item of items) queueItem(st, item); });
     return { ok: false, queued: items.length > 0, pushed: 0 };

@@ -1,5 +1,4 @@
 // Small client for the team-memory control plane. SPOOKLING_API_URL, else apiUrl saved at login, else the shipped app.
-import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { readCredentials } from './credentials.js';
 
@@ -71,9 +70,8 @@ export function clean(value) {
   return String(value ?? '').replace(/[^\P{C}\n]/gu, '');
 }
 
-export const VERSION = (() => {
-  try { return JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; }
-})();
+import { VERSION } from './version.js';
+export { VERSION };
 export const USER_AGENT = `spookling/${VERSION} (${process.platform}; node/${process.versions.node})`;
 
 const NET_CODES = new Set(['TypeError', 'TimeoutError', 'AbortError', 'NETWORK', 'ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT',
@@ -213,12 +211,26 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
     listOrgs({ token: t } = {}) {
       return call('/cli/orgs', { method: 'GET', token: t || auth() });
     },
+    // the org that pays for and receives your private memory: { orgId, source, chosenOrgId }
+    getDefaultOrg({ token: t } = {}) {
+      return call('/memory/default-org', { method: 'GET', token: t || auth() });
+    },
+    setDefaultOrg({ orgId, token: t } = {}) {
+      return call('/memory/default-org', { method: 'PUT', token: t || auth(), body: { orgId } });
+    },
     feed({ orgId, since, cursor, token: t } = {}) {
       const q = new URLSearchParams();
       if (since) q.set('since', since);
       if (cursor) q.set('cursor', cursor);
       q.set('limit', '100');
       return call(`/memory/orgs/${encodeURIComponent(orgId)}/feed?${q}`, { method: 'GET', token: t || auth() });
+    },
+    // cloud memory: one retrieval, and the project brief. The caller owns the time budget (timeoutMs per call).
+    retrieve({ body, token: t, timeoutMs } = {}) {
+      return call('/memory/retrieve', { method: 'POST', token: t || auth(), body, ...(timeoutMs ? { timeoutMs } : {}) });
+    },
+    projectContext({ projectKey, token: t, timeoutMs } = {}) {
+      return call(`/memory/context?${new URLSearchParams({ projectKey })}`, { method: 'GET', token: t || auth(), ...(timeoutMs ? { timeoutMs } : {}) });
     },
     getSession({ sid, after, token: t } = {}) {
       const q = new URLSearchParams();

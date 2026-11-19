@@ -138,8 +138,8 @@ def test_codex_final_answers_each_stay(open_store, tmp_path):
 
 
 def test_the_cap_ends_a_cut_turn_with_an_ellipsis_and_keeps_a_long_one_whole():
-    whole = "word " * 3000  # 15,000 characters: under the cap
+    whole = "word " * 5000  # 25,000 characters: under the cap
     assert hooks.clean(whole) == whole.strip()
-    cut = hooks.clean("word " * 5000)
+    cut = hooks.clean("word " * 9000)
     assert len(cut) <= hooks.TURN_CAP + 2 and cut.endswith("word …")
-    assert hooks.TURN_CAP >= 16000
+    assert hooks.TURN_CAP >= 30000

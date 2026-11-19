@@ -8,8 +8,10 @@ import { init, initUpdate, status, uninstall } from './wizard.js';
 import { update } from './update.js';
 import { restore } from './restore.js';
 import { backfill } from './backfill.js';
-import { login, logout, orgs, tokens, whoami } from './account.js';
-import { VERSION, clean, originWarning } from './cloud.js';
+import { login, logout, orgs, orgsDefault, tokens, whoami } from './account.js';
+import { clean, originWarning } from './cloud.js';
+import { VERSION } from './version.js';
+import { installedMode } from './cloud-retrieve.js';
 import { updateAvailable } from './registry.js';
 import { refresh } from './team.js';
 import { flushQueued } from './push.js';
@@ -31,6 +33,8 @@ const HELP = `Spookling Memory
   spookling logout          forget the saved token
   spookling whoami          who the saved login is, its API and default org
   spookling orgs            the orgs you belong to (id and name; use either with --org)
+  spookling orgs default [<org name or id>]   show your default org, or set it (it pays for and receives your PRIVATE memory;
+                            a repo's shared project memory is searched across all your orgs)
   spookling tokens          your CLI tokens: label, created, last used, and this device
   spookling tokens revoke <id>   revoke one (this device's token also logs you out)
   spookling tokens revoke --all  revoke every token, this device included
@@ -50,6 +54,7 @@ const HELP = `Spookling Memory
   --scope project   init/uninstall: project harness files (.codex/hooks.json for Codex), the default
   --scope user      init/uninstall: user harness files ($CODEX_HOME/hooks.json for Codex)
   --harness codex   uninstall: remove Codex hooks (default: claude); init asks which harness to use
+  --cloud           init: log in and use your Spookling plan, without asking (--keys: your own API keys, without asking)
   --no-ghost        init: do not ask to put the ghost in the Claude Code status line
   --allow-share     init: let Claude share sessions when you ask (adds the share tools to permissions.allow; each share is still confirmed)
   --no-allow-share  init: do not add them (without either flag, init asks at a terminal and skips it otherwise)
@@ -222,7 +227,7 @@ function tokensCommand(args, { fns, home }) {
 
 async function route(args, deps) {
   const fns = {
-    init, refresh, flush: flushQueued, login, logout, whoami, orgs, tokens, status, update, restore, initUpdate, uninstall, backfill,
+    init, refresh, flush: flushQueued, login, logout, whoami, orgs, orgsDefault, tokens, status, update, restore, initUpdate, uninstall, backfill,
     delete: { one: deleteSession, all: deleteAllSessions },
     share: { status: shareStatus, session: setSessionShare, project: setProjectAutoShare },
     ...Object.fromEntries(Object.entries(deps).filter(([, v]) => typeof v === 'function' || (v && typeof v === 'object' && ('status' in v || 'one' in v)))),
@@ -253,7 +258,7 @@ async function route(args, deps) {
     case 'init': {
       if (args.includes('--allow-share') && args.includes('--no-allow-share')) usage('use --allow-share or --no-allow-share, not both');
       const allowShare = args.includes('--allow-share') ? true : args.includes('--no-allow-share') ? false : undefined;
-      return args.includes('--update') ? fns.initUpdate({ project: cwd, home, allowShare }) : fns.init({ anim, scope, project: folder, ghost, allowShare });
+      return args.includes('--update') ? fns.initUpdate({ project: cwd, home, allowShare }) : fns.init({ anim, scope, project: folder, ghost, allowShare, ...(args.includes('--cloud') && { mode: 'cloud' }), ...(args.includes('--keys') && { mode: 'keys' }) });
     }
     case 'demo': {
       const n = flag(args, 'frames', 'takes a number');
@@ -270,7 +275,12 @@ async function route(args, deps) {
     case 'delete': return deleteCommand(args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'login': return fns.login({ home, cwd, apiUrl });
     case 'logout': return fns.logout({ home });
-    case 'orgs': return fns.orgs({ home });
+    case 'orgs': {
+      const rest = operands(args, []);
+      if (rest[0] === undefined) return fns.orgs({ home });
+      if (rest[0] !== 'default') usage('usage: spookling orgs | spookling orgs default [<org name or id>]');
+      return fns.orgsDefault({ home, query: rest.slice(1).join(' '), tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY), ...(deps.choose && { choose: deps.choose }) });
+    }
     case 'tokens': return tokensCommand(args, ctx);
     case 'whoami': {
       if (!deps.whoami) await updateAvailable({ home, current: VERSION, env }).catch(() => null); // refreshes the daily cache, at most 2 s
@@ -286,7 +296,7 @@ async function route(args, deps) {
       const r = await fns.backfill({ project, home, env, since, all: args.includes('--all') });
       return r.error ? 1 : 0;
     }
-    case 'status': return fns.status(existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) ? cwd : home, undefined, undefined, { liveOrgs: true });
+    case 'status': return fns.status(existsSync(join(cwd, '.memory')) || !existsSync(join(home, '.memory')) || installedMode({ cwd, home }) === 'cloud' ? cwd : home, undefined, undefined, { liveOrgs: true });
     case 'uninstall': return fns.uninstall(folder, { scope, harness });
     case 'help': process.stdout.write(HELP); return 0;
     default:

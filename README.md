@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · `spookling` 0.2.2 · November 2026*
+*Algorithm v2.1 · `spookling` 0.2.3 · November 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -245,11 +245,13 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost is the status line.
 
-Spookling Memory is out as `spookling` 0.2.2, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
+Spookling Memory is out as `spookling` 0.2.3, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
 
 New in 0.2.1: turns are saved before any model is called, so a tagger key that runs out or stops working no longer loses a chat ([When the tagger key stops working](#when-the-tagger-key-stops-working)); every assistant reply in a turn is logged, not only the last one; turns can be up to 16,000 characters; `spookling backfill` puts back turns missing from `.memory/`; and `spookling delete` (or `memory_delete` from chat) removes uploaded sessions from the cloud.
 
 New in 0.2.2: sharing is easier. `spookling share` with no id shares the current session; a session that has not uploaded yet is uploaded on demand or queued as a pending share; `spookling unshare` cancels it; org lists are read live; `spookling refresh` also retries queued uploads and shares; and `init` can let Claude share for you through an allow rule for five share tools. See [Team memory](#team-memory).
+
+New in 0.2.3: cloud mode. `init` asks whether to log in and let Spookling build your memory in the cloud from your plan (no API key, no local server), or to enter API keys as before. Prompts and `memory_retrieve` ask the cloud first and fall back to the local server; each session starts with the project's brief. `spookling orgs default [org]` shows or changes your default org; uploaded sessions carry the project's git remote so a repo's memory is shared across clones; turns keep up to 30,000 characters; and `spookling update` also stops an old server it finds by its port. See [Cloud mode](#cloud-mode).
 
 **Upgrading.** On 0.1.x, run `npx spookling init` once. From 0.2 on, run `spookling update`. Why: [Updating](#updating).
 
@@ -276,6 +278,7 @@ npx spookling login                # sign in in the browser; init never logs in
 npx spookling logout               # forget the saved token
 npx spookling whoami               # who you are, the API and your default org
 npx spookling orgs                 # the orgs you belong to
+npx spookling orgs default [org]   # show your default org, or set it by name or id (it pays for and receives your PRIVATE memory; a repo's shared project memory is searched across all your orgs)
 npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `--all` to revoke
 npx spookling refresh              # pull the org feeds into the local cache, and retry queued uploads and shares
 npx spookling sessions [project]   # your newest 20 uploaded sessions (--all, --limit N)
@@ -390,6 +393,16 @@ In Claude Code a small ghost sits in the status line under the prompt (`init` as
 
 ---
 
+## Cloud mode
+
+`spookling init` asks first: **Log in to Spookling and use your plan (recommended)**, or **Enter API keys (as today)**. Pick the first and init runs the same device login as `spookling login`, asks for no key, writes no `keys.env` and starts no local server. Memory is built in the cloud from your uploaded sessions and your org's shared ones, and paid from your plan.
+
+- **Prompts.** The hook asks the Spookling API for memory with a hard budget of about 1.8 s (`SPOOKLING_CLOUD_BUDGET_MS` changes it) and injects the answer the same way the local server does. Acknowledgements and slash commands are skipped on your machine. A repeat of the same prompt within 60 s comes from a small cache in `~/.spookling/`, and each session is only shown an item once.
+- **Session start.** Claude Code and Codex get the project's brief once per session, when the cloud has one.
+- **Fallback.** Offline, logged out, a 401, a timeout or an unavailable engine never blocks the agent: the hook uses the local server if one is running, and otherwise says nothing.
+- **Tools.** `memory_retrieve` asks the cloud first through the node CLI, so your token is never given to the Python process, then the local server.
+- **Status.** `spookling status` shows `mode: cloud, logged in as you@example.com, org Acme`. The mode is saved per install in `~/.spookling/install.json`; `init --cloud` or `--keys` skips the question, and `SPOOKLING_MODE=local` turns cloud retrieval off for a shell.
+
 ## Reader and tagger
 
 **Two models touch your memory. Only one of them is ours.**
@@ -417,7 +430,7 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 **Upload.** Once you are logged in, each Stop hook uploads the finished session to the Spookling app, named after its git repo.
 
 - **Private:** only you can see it until you share it.
-- **What goes up:** the cleaned turns from `.memory/log.jsonl`, cut to 16,000 characters each (a cut ends with "…"), with secrets masked first. `log.jsonl` itself is not changed.
+- **What goes up:** the cleaned turns from `.memory/log.jsonl`, cut to 30,000 characters each (a cut ends with "…"), with secrets masked first. `log.jsonl` itself is not changed.
 - **What is masked:** API keys, AWS key IDs, GitHub tokens, `NAME_TOKEN=value` lines, JWTs, PEM private-key blocks, `scheme://user:pass@` URLs, Slack tokens, Stripe keys. This is pattern matching, so a secret in another shape still gets through.
 - **Network down:** the turns wait in `~/.spookling/upload-state.json` and go up on a later Stop. Upload progress is remembered per account and server, so switching either starts cleanly; if the server holds fewer turns than expected, the client asks it where it is and resends from there.
 - **Refused for good:** that session is skipped and the rest still upload. This covers one shared with an org you have since left (`org_owned`), one past the 10,000-turn limit, and one over the 10,000-session account limit (which also pauses creating new sessions for that push). `spookling status` names them.
@@ -428,6 +441,7 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 
 ```bash
 spookling orgs                          # your orgs, as id and name
+spookling orgs default [<org name or id>]   # the default org as the API reports it; with an org, change it (two orgs with one name: pass the id)
 spookling sessions [project] [--limit N | --all]   # newest 20 uploaded sessions: private, or shared with which org; plus auto-share rules
 spookling share [<session id> | --last] [--org <id or name>] [--yes]   # no id: the current session, else this project's newest
 spookling unshare <session id> [--org <id or name>]   # all orgs without --org
