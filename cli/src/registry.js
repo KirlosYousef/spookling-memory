@@ -58,6 +58,16 @@ export async function latestVersion({ fetchImpl = globalThis.fetch, run = spawnS
   throw new Error(reason);
 }
 
+/**
+ * The one rule for an update notice: `latest` only if it is a real version, newer than the running code (`current`) and newer than
+ * every version the installed hooks point at (`hooksAt`). Anything malformed gives null, never a notice.
+ */
+export function noticeFor(latest, current, hooksAt = []) {
+  if (!isSemver(latest) || !isSemver(current)) return null;
+  const floor = [current, ...hooksAt.filter(isSemver)].reduce((a, b) => (compareVersions(a, b) >= 0 ? a : b));
+  return compareVersions(latest, floor) > 0 ? latest.trim() : null;
+}
+
 const cachePath = (home) => join(home, '.spookling', 'update-check.json');
 function readCache(home) {
   try {
@@ -80,24 +90,25 @@ const off = (env) => env.SPOOKLING_NO_UPDATE_CHECK === '1' || !!env.CI || !!env.
  * The newer version if there is one, else null. Asks the registry at most once in 24 h (a failure counts too), for at most 2 s.
  * Interactive commands only.
  */
-export async function updateAvailable({ home = homedir(), current, env = process.env, fetchImpl, run, now = Date.now } = {}) {
+export async function updateAvailable({ home = homedir(), current, hooksAt = [], env = process.env, fetchImpl, run, now = Date.now } = {}) {
   if (off(env)) return null;
   const c = readCache(home);
-  if (!c.checkedAt || now() - c.checkedAt >= DAY) {
+  if (!c.checkedAt || c.checkedAt > now() || now() - c.checkedAt >= DAY) { // a checkedAt in the future is a bad clock or a bad file
     let latest = c.latest;
     try { latest = await latestVersion({ fetchImpl, run: run || (() => ({ status: 1 })), timeoutMs: 2000 }); } catch { /* keep the old answer */ }
     c.latest = latest;
     c.checkedAt = now();
     writeCache(home, c);
   }
-  return c.latest && compareVersions(c.latest, current) > 0 ? c.latest : null;
+  return noticeFor(c.latest, current, hooksAt);
 }
 
 /** For commands that cannot wait: the cached answer, shown at most once a day. Marks it shown. */
-export function cachedNotice({ home = homedir(), current, env = process.env, now = Date.now } = {}) {
+export function cachedNotice({ home = homedir(), current, hooksAt = [], env = process.env, now = Date.now } = {}) {
   if (off(env)) return null;
   const c = readCache(home);
-  if (!c.latest || compareVersions(c.latest, current) <= 0 || now() - c.noticedAt < DAY) return null;
+  const v = noticeFor(c.latest, current, hooksAt);
+  if (!v || now() - c.noticedAt < DAY) return null;
   writeCache(home, { ...c, noticedAt: now() });
-  return c.latest;
+  return v;
 }
