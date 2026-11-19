@@ -5,6 +5,7 @@ The install wizard for Spookling Memory. Node 18 or newer, no dependencies. Work
 ```bash
 npx spookling init                 # the intro, then the step-by-step install, for this project
 npx spookling init --scope user    # the same, wired for every project you open in Claude Code
+npx spookling init --cloud | --keys   # skip the first question: build memory in the cloud from your Spookling plan (logs in), or use your own API keys
 npx spookling demo                 # the whole install as you would see it, answered for you; writes nothing
 npx spookling status               # is the server up, what is wired (project and user files), which tagger, and a `cloud` line (see Team memory); exit 0 when all is well
 npx spookling backfill [--since <date>] [--all]   # log turns missing from .memory/ back from the Claude Code transcripts (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects); this project's, or every project's with --all; no duplicates, so it is safe to repeat; the uploader sends them with the next session stop
@@ -15,6 +16,7 @@ npx spookling login                # sign in in the browser, pick a default org,
 npx spookling logout               # forget the saved token
 npx spookling whoami               # name and email, the API URL, the default org
 npx spookling orgs                 # the orgs you belong to, as id and name
+npx spookling orgs default [<org id or name>]   # show the default org as the API reports it, or change it (two orgs with one name: pass the id)
 npx spookling tokens               # your CLI tokens: id, label, created, last used, (this device)
 npx spookling tokens revoke <id>   # revoke one (a unique prefix of 6+ characters works); this device's token also forgets the login
 npx spookling tokens revoke --all  # revoke every token, this device included
@@ -206,6 +208,7 @@ After approval, three more steps, none of which can fail the login:
 
 ## Advanced
 
+- **Cloud mode:** chosen at `init` (or with `--cloud`) and saved in `~/.spookling/install.json`. The prompt hooks ask the API within `SPOOKLING_CLOUD_BUDGET_MS` (default about 1800) and fall back to the local server; `SPOOKLING_MODE=local` turns cloud retrieval off for a shell. See [Cloud mode](../README.md#cloud-mode).
 - **A different server:** `spookling login --api-url <url>` (or `SPOOKLING_API_URL` for that login) picks the origin; it is saved as `apiUrl` with the token.
 - **CI and headless use:** `SPOOKLING_TOKEN` is used instead of the saved login, and only with an explicit `SPOOKLING_API_URL` that passes the https rule; `whoami` then shows no API line.
 - **Origin pinning:** a saved login only talks to the server it was issued by (an older credentials file without `apiUrl` is pinned to the shipped app). A different `SPOOKLING_API_URL` is ignored for authenticated calls: interactive commands print one line saying so, hooks say nothing. Origins must be `https`, except `localhost`, `127.0.0.1` and `[::1]`.

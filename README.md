@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · `spookling` 0.2.2 · November 2026*
+*Algorithm v2.1 · `spookling` 0.2.3 · November 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -245,11 +245,13 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost is the status line.
 
-Spookling Memory is out as `spookling` 0.2.2, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
+Spookling Memory is out as `spookling` 0.2.3, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
 
-New in 0.2.1: turns are saved before any model is called, so a tagger key that runs out or stops working no longer loses a chat ([When the tagger key stops working](#when-the-tagger-key-stops-working)); every assistant reply in a turn is logged, not only the last one; turns can be up to 30,000 characters; `spookling backfill` puts back turns missing from `.memory/`; and `spookling delete` (or `memory_delete` from chat) removes uploaded sessions from the cloud.
+New in 0.2.1: turns are saved before any model is called, so a tagger key that runs out or stops working no longer loses a chat ([When the tagger key stops working](#when-the-tagger-key-stops-working)); every assistant reply in a turn is logged, not only the last one; turns can be up to 16,000 characters; `spookling backfill` puts back turns missing from `.memory/`; and `spookling delete` (or `memory_delete` from chat) removes uploaded sessions from the cloud.
 
 New in 0.2.2: sharing is easier. `spookling share` with no id shares the current session; a session that has not uploaded yet is uploaded on demand or queued as a pending share; `spookling unshare` cancels it; org lists are read live; `spookling refresh` also retries queued uploads and shares; and `init` can let Claude share for you through an allow rule for five share tools. See [Team memory](#team-memory).
+
+New in 0.2.3: cloud mode. `init` asks whether to log in and let Spookling build your memory in the cloud from your plan (no API key, no local server), or to enter API keys as before. Prompts and `memory_retrieve` ask the cloud first and fall back to the local server; each session starts with the project's brief. `spookling orgs default [org]` shows or changes your default org; uploaded sessions carry the project's git remote so a repo's memory is shared across clones; turns keep up to 30,000 characters; and `spookling update` also stops an old server it finds by its port. See [Cloud mode](#cloud-mode).
 
 **Upgrading.** On 0.1.x, run `npx spookling init` once. From 0.2 on, run `spookling update`. Why: [Updating](#updating).
 
