@@ -213,12 +213,26 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
     listOrgs({ token: t } = {}) {
       return call('/cli/orgs', { method: 'GET', token: t || auth() });
     },
+    // the org that pays for and receives your private memory: { orgId, source, chosenOrgId }
+    getDefaultOrg({ token: t } = {}) {
+      return call('/memory/default-org', { method: 'GET', token: t || auth() });
+    },
+    setDefaultOrg({ orgId, token: t } = {}) {
+      return call('/memory/default-org', { method: 'PUT', token: t || auth(), body: { orgId } });
+    },
     feed({ orgId, since, cursor, token: t } = {}) {
       const q = new URLSearchParams();
       if (since) q.set('since', since);
       if (cursor) q.set('cursor', cursor);
       q.set('limit', '100');
       return call(`/memory/orgs/${encodeURIComponent(orgId)}/feed?${q}`, { method: 'GET', token: t || auth() });
+    },
+    // cloud memory: one retrieval, and the project brief. The caller owns the time budget (timeoutMs per call).
+    retrieve({ body, token: t, timeoutMs } = {}) {
+      return call('/memory/retrieve', { method: 'POST', token: t || auth(), body, ...(timeoutMs ? { timeoutMs } : {}) });
+    },
+    projectContext({ projectKey, token: t, timeoutMs } = {}) {
+      return call(`/memory/context?${new URLSearchParams({ projectKey })}`, { method: 'GET', token: t || auth(), ...(timeoutMs ? { timeoutMs } : {}) });
     },
     getSession({ sid, after, token: t } = {}) {
       const q = new URLSearchParams();

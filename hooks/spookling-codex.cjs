@@ -33,18 +33,38 @@ const said = (state, title, details) => {
     : `\x1b[1m${ghost.paint(`spookling ${state}`, level, ghost.PALETTE[state].O)}\x1b[0m${ghost.paint(` · ${title}`, level, GREY)}`;
   return details ? [head, ...ghost.card(state, details.map((t) => [[t, GREY]]))].join('\n') : head;
 };
-const unavailable = () => visible
+let cloudOn = false; // cloud mode: no local server is no error, there is just nothing to say
+const unavailable = () => visible && !cloudOn
   ? emit({ systemMessage: said('degraded', 'memory unavailable', ['the local server did not answer', 'check it with: spookling-memory status']) })
   : done();
 process.stdin.on('data', (c) => chunks.push(c));
 process.stdin.on('error', done);
-process.stdin.on('end', () => {
+process.stdin.on('end', async () => {
   try { p = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return done(); }
   if (!p || typeof p !== 'object' || Array.isArray(p)) return done();
   const start = p.hook_event_name === 'SessionStart';
   if (!start && !Object.hasOwn(events, p.hook_event_name)) return done();
   if (p.hook_event_name === 'UserPromptSubmit' && (typeof p.prompt !== 'string' || !p.prompt.trim())) return done();
   visible = start || p.hook_event_name === 'UserPromptSubmit';
+  // Cloud mode: the cloud first (a hard ~1.8 s budget inside); on null the local server below, which may be absent: then nothing.
+  let cloud = null;
+  try { cloud = visible ? require('./cloud.cjs') : null; } catch { /* a partial copy: local only */ }
+  if (cloud) {
+    cloudOn = await cloud.on(p);
+    if (cloudOn && start) {
+      const brief = await cloud.brief(p);
+      if (brief) return emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: brief },
+        systemMessage: said('ready', 'project brief from your cloud memory') });
+    }
+    if (cloudOn && !start) {
+      const r = await cloud.retrieve(p);
+      if (r) {
+        const n = r.items.length;
+        const note = n ? said('active', `${n} ${n === 1 ? 'item' : 'items'} recalled from your cloud memory`) : said('active', 'recall ran: nothing on record for this prompt');
+        return emit({ ...(r.context && { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: r.context } }), systemMessage: note });
+      }
+    }
+  }
   const timeout = p.hook_event_name === 'PreCompact' ? COMPACT_REPLY_MS : REPLY_MS;
   // A wall-clock deadline also covers a connected server that never finishes its response.
   const deadline = setTimeout(unavailable, timeout + CONNECT_MS);

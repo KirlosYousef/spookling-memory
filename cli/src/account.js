@@ -382,6 +382,28 @@ export function whoami({ home, env = process.env, write = (s) => process.stdout.
   return 0;
 }
 
+const createCloudQuiet = (opts) => { try { return createCloud(opts); } catch { return null; } };
+
+// GET /memory/default-org, as { id, source } when it names one of `list`; null on any failure (offline, 503, an old server)
+async function liveDefault(client, token, list) {
+  if (!client || typeof client.getDefaultOrg !== 'function') return null;
+  try {
+    const d = await client.getDefaultOrg({ token });
+    const id = typeof d?.orgId === 'string' ? d.orgId : null;
+    if (!id || !list.some((o) => o.id === id)) return null;
+    return { id, source: typeof d.source === 'string' ? d.source : 'chosen' };
+  } catch { return null; }
+}
+
+// Keep the saved copy in step with the server. An implicit default (the oldest org, or the only one) is not saved
+// unless a copy already exists: share still asks when you have several orgs and never chose one.
+function syncDefaultCache(live, list, creds, home) {
+  if (creds.fromEnv) return;
+  if (creds.defaultOrgId === live.id) return;
+  if (!creds.defaultOrgId && !creds.staleDefaultOrg && live.source !== 'chosen') return;
+  try { setDefaultOrg(list.find((o) => o.id === live.id), { home }); } catch { /* a cache */ }
+}
+
 // The orgs this login is an active member of: GET /cli/orgs.
 export async function orgs({
   home, env = process.env, cloud, write = (s) => process.stdout.write(s), heading = false,
@@ -402,8 +424,11 @@ export async function orgs({
   }
   const list = orgRecords(listed);
   if (heading) say(write, 'Orgs (checked just now):');
+  // the server's resolved default wins; the saved one is a cache that follows it, and is what is marked offline
+  const live = await liveDefault(cloud || createCloudQuiet({ env, home, token: creds.token }), creds.token, list);
+  if (live) syncDefaultCache(live, list, creds, home);
   // the saved default is only kept when it is still one of these
-  const stale = creds.defaultOrgId && !list.some((o) => o.id === creds.defaultOrgId) ? (creds.defaultOrgName || creds.defaultOrgId) : creds.staleDefaultOrg;
+  const stale = live ? null : creds.defaultOrgId && !list.some((o) => o.id === creds.defaultOrgId) ? (creds.defaultOrgName || creds.defaultOrgId) : creds.staleDefaultOrg;
   if (stale) {
     try { setDefaultOrg(null, { home }); } catch { /* the note is enough */ }
     say(write, `Your saved default org '${clean(stale)}' is no longer one of your orgs, so it was cleared.${list.length > 1 ? ' Pick one when you share, or run spookling login to choose a default.' : ''}`);
@@ -412,7 +437,7 @@ export async function orgs({
     say(write, 'You are not in an org. Join or create one in the Spookling web app, then run spookling orgs again.');
     return 0;
   }
-  const kept = stale ? null : creds.defaultOrgId;
+  const kept = live ? live.id : stale ? null : creds.defaultOrgId;
   for (const o of list) say(write, `${clean(o.id)}  ${clean(o.name)}${o.id === kept ? '  (default)' : ''}`);
   return 0;
 }
@@ -475,4 +500,101 @@ export async function tokens({
   } catch (e) {
     return fail(e);
   }
+}
+
+const orgLine = (o, def) => `${clean(o.id)}  ${clean(o.name)}${o.id === def ? '  (default)' : ''}`;
+const PRIVATE_NOTE = 'The default org pays for and receives your private memory. A repo\'s shared project memory is searched across all your orgs.';
+
+// Which of `list` the user meant: an exact id, else a case-insensitive exact name.
+function matchOrgs(list, query) {
+  const q = query.trim();
+  const byId = list.filter((o) => o.id === q);
+  if (byId.length) return byId;
+  return list.filter((o) => o.name.toLowerCase() === q.toLowerCase());
+}
+
+/**
+ * `spookling orgs default` shows the default org as the API reports it, and the orgs with it marked; at a terminal it then
+ * offers a pick. `spookling orgs default <org name or id>` sets it (PUT /memory/default-org) and updates the saved copy.
+ * No terminal: it never asks.
+ */
+export async function orgsDefault({
+  home, env = process.env, cloud, write = (s) => process.stdout.write(s), query = '', tty = false, choose,
+} = {}) {
+  const creds = readCredentials({ home, env });
+  if (!creds.token) {
+    say(write, 'Not logged in. Run spookling login.');
+    return 1;
+  }
+  const fail = (e, what) => {
+    say(write, e.status === 401 ? 'The saved login was rejected. Run spookling login.'
+      : e.status === 503 ? 'The default org is not enabled on this server.'
+        : e.status === 403 || e.status === 404 ? 'That org is not one of yours (you must be an active member). Run spookling orgs to see yours.'
+          : e.status === 400 ? 'The server did not accept that org. Run spookling orgs to see yours.'
+            : unreachable(e, env, home) || `Could not ${what} (${clean(code(e))}).`);
+    return 1;
+  };
+  let client = cloud;
+  try { client ||= createCloud({ env, home, token: creds.token }); } catch (e) { say(write, clean(e.message)); return 1; }
+  let list, current;
+  try {
+    list = orgRecords(await client.listOrgs({ token: creds.token }));
+    current = await client.getDefaultOrg({ token: creds.token });
+  } catch (e) { return fail(e, 'read your default org'); }
+  if (!list.length) {
+    say(write, 'You are not in an org. Join or create one in the Spookling web app, then run spookling orgs again.');
+    return 0;
+  }
+  const liveId = typeof current?.orgId === 'string' && list.some((o) => o.id === current.orgId) ? current.orgId : null;
+  const nameOf = (id) => list.find((o) => o.id === id)?.name || id;
+  const q = String(query || '').trim();
+
+  if (q) {
+    const hits = matchOrgs(list, q);
+    if (hits.length === 0) {
+      say(write, `No org matches '${clean(q)}'. Your orgs:`);
+      for (const o of list) say(write, orgLine(o, liveId));
+      return 1;
+    }
+    if (hits.length > 1) {
+      say(write, `More than one org is named '${clean(q)}'. Run again with the id of the one you mean:`);
+      for (const o of hits) say(write, orgLine(o, liveId));
+      return 1;
+    }
+    let done;
+    try { done = await client.setDefaultOrg({ orgId: hits[0].id, token: creds.token }); } catch (e) { return fail(e, 'set your default org'); }
+    const id = typeof done?.orgId === 'string' && done.orgId ? done.orgId : hits[0].id;
+    if (!creds.fromEnv) { try { setDefaultOrg({ id, name: nameOf(id) }, { home }); } catch { /* the server has it; the copy is a cache */ } }
+    say(write, `Default org: ${clean(nameOf(id))} (${clean(id)})`);
+    say(write, PRIVATE_NOTE);
+    return 0;
+  }
+
+  if (liveId) {
+    say(write, `Default org: ${clean(nameOf(liveId))} (${clean(liveId)})`);
+    // the server's answer is the truth: the saved copy follows it (an implicit default is not saved unless a copy exists)
+    syncDefaultCache({ id: liveId, source: typeof current.source === 'string' ? current.source : 'chosen' }, list, creds, home);
+  } else {
+    say(write, 'No default org.');
+  }
+  for (const o of list) say(write, orgLine(o, liveId));
+  say(write, PRIVATE_NOTE);
+  if (list.length < 2) return 0;
+  if (!tty) {
+    say(write, 'To change it: spookling orgs default <org name or id>');
+    return 0;
+  }
+  const pick = choose || (await termHelpers()).choose;
+  const keepAt = list.length;
+  let i;
+  try {
+    const keepIdx = list.findIndex((o) => o.id === liveId);
+    i = await pick('   Which org should be your default?', [...list.map((o) => `${clean(o.name)} (${clean(o.id)})`), 'Keep it as it is'], keepIdx >= 0 ? keepIdx : keepAt);
+  } catch { i = keepAt; }
+  const chosen = list[i];
+  if (!chosen || chosen.id === liveId) {
+    say(write, 'Default org unchanged.');
+    return 0;
+  }
+  return orgsDefault({ home, env, cloud: client, write, query: chosen.id, tty: false });
 }

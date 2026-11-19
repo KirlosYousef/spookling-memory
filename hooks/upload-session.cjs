@@ -217,6 +217,8 @@ async function uploadStoppedSession(payload = {}) {
       env,
       sessionId,
       project: projectFromSession(payload, env) || fromLog,
+      // the session's own folder: the uploader reads (and caches) its `git remote get-url origin` as repoUrl
+      projectDir,
       ...(timeoutMs > 0 ? { timeoutMs } : {}),
       log: (m) => note(home, m),
     });

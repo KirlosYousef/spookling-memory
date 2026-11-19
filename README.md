@@ -276,6 +276,7 @@ npx spookling login                # sign in in the browser; init never logs in
 npx spookling logout               # forget the saved token
 npx spookling whoami               # who you are, the API and your default org
 npx spookling orgs                 # the orgs you belong to
+npx spookling orgs default [org]   # show your default org, or set it by name or id (it pays for and receives your PRIVATE memory; a repo's shared project memory is searched across all your orgs)
 npx spookling tokens               # your CLI tokens; `tokens revoke <id>` or `--all` to revoke
 npx spookling refresh              # pull the org feeds into the local cache, and retry queued uploads and shares
 npx spookling sessions [project]   # your newest 20 uploaded sessions (--all, --limit N)
@@ -390,6 +391,16 @@ In Claude Code a small ghost sits in the status line under the prompt (`init` as
 
 ---
 
+## Cloud mode
+
+`spookling init` asks first: **Log in to Spookling and use your plan (recommended)**, or **Enter API keys (as today)**. Pick the first and init runs the same device login as `spookling login`, asks for no key, writes no `keys.env` and starts no local server. Memory is built in the cloud from your uploaded sessions and your org's shared ones, and paid from your plan.
+
+- **Prompts.** The hook asks the Spookling API for memory with a hard budget of about 1.8 s (`SPOOKLING_CLOUD_BUDGET_MS` changes it) and injects the answer the same way the local server does. Acknowledgements and slash commands are skipped on your machine. A repeat of the same prompt within 60 s comes from a small cache in `~/.spookling/`, and each session is only shown an item once.
+- **Session start.** Claude Code and Codex get the project's brief once per session, when the cloud has one.
+- **Fallback.** Offline, logged out, a 401, a timeout or an unavailable engine never blocks the agent: the hook uses the local server if one is running, and otherwise says nothing.
+- **Tools.** `memory_retrieve` asks the cloud first through the node CLI, so your token is never given to the Python process, then the local server.
+- **Status.** `spookling status` shows `mode: cloud, logged in as you@example.com, org Acme`. The mode is saved per install in `~/.spookling/install.json`; `init --cloud` or `--keys` skips the question, and `SPOOKLING_MODE=local` turns cloud retrieval off for a shell.
+
 ## Reader and tagger
 
 **Two models touch your memory. Only one of them is ours.**
@@ -428,6 +439,7 @@ Optional, and only after `spookling login`. `init` never logs in and works offli
 
 ```bash
 spookling orgs                          # your orgs, as id and name
+spookling orgs default [<org name or id>]   # the default org as the API reports it; with an org, change it (two orgs with one name: pass the id)
 spookling sessions [project] [--limit N | --all]   # newest 20 uploaded sessions: private, or shared with which org; plus auto-share rules
 spookling share [<session id> | --last] [--org <id or name>] [--yes]   # no id: the current session, else this project's newest
 spookling unshare <session id> [--org <id or name>]   # all orgs without --org

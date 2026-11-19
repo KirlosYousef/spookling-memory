@@ -350,7 +350,11 @@ test('Stop returns when the API is down and the session is queued', async () => 
       assert.ok(ran.ms < HOOK_MAX_MS, `${script} blocked for ${ran.ms}ms`);
       const statePath = join(home, '.spookling', 'upload-state.json');
       assert.equal(existsSync(statePath), false, 'the hook waited for the upload');
-      const state = await waitFor(() => (existsSync(statePath) ? readFileSync(statePath, 'utf8') : ''), 4000);
+      // the state file first appears with the cached repo remote; wait for the queued session
+      const state = await waitFor(() => {
+        const text = existsSync(statePath) ? readFileSync(statePath, 'utf8') : '';
+        return text.includes('Make the sync idempotent') ? text : '';
+      }, 4000);
       assert.match(state, /Make the sync idempotent/);
       assert.equal(state.includes(token), false);
       assert.deepEqual(readFileSync(logPath), before);

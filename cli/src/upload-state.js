@@ -59,7 +59,7 @@ export function noteUpload(home, message) {
   } catch { /* logging must not break anything */ }
 }
 
-const blank = () => ({ cursors: {}, skipped: {}, queue: [], shares: [], shareFailures: [], auth: null, forkModes: {}, links: {} });
+const blank = () => ({ cursors: {}, skipped: {}, queue: [], shares: [], shareFailures: [], auth: null, forkModes: {}, links: {}, repoUrls: {} });
 
 function normalize(raw) {
   return {
@@ -71,6 +71,8 @@ function normalize(raw) {
     auth: raw?.auth && typeof raw.auth === 'object' && raw.auth.expired ? { expired: true, at: String(raw.auth.at || '') } : null,
     forkModes: raw?.forkModes && typeof raw.forkModes === 'object' ? raw.forkModes : {},
     links: raw?.links && typeof raw.links === 'object' ? raw.links : {},
+    // project git root -> { url, at }: the cached `git remote get-url origin`, so git is not run on every upload
+    repoUrls: raw?.repoUrls && typeof raw.repoUrls === 'object' ? raw.repoUrls : {},
   };
 }
 

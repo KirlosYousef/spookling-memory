@@ -51,9 +51,37 @@ def call(path: str, body: dict | None = None, raw: bytes | None = None):
     return out if path == "/v1/export" else json.loads(out)
 
 
+def _node_script(name: str) -> Path | None:
+    here = Path(__file__).resolve()
+    for base in (here.parents[2] / "cli" / "src", here.parents[2] / "hooks" / "lib"):
+        if (base / name).is_file():
+            return base / name
+    return None
+
+
+def _cloud_retrieve(question: str) -> dict | None:
+    """Ask the Spookling cloud through node, so the login token never enters this process. None means fall back to the local server:
+    not in cloud mode, offline, slow, logged out, or the cloud engine has nothing usable. Never raises."""
+    script, node = _node_script("cloud-retrieve-invoke.js"), shutil.which("node")
+    if script is None or node is None:
+        return None
+    try:
+        proc = subprocess.run([node, str(script), json.dumps({"question": question, "cwd": os.getcwd()})],
+                              check=False, capture_output=True, text=True, timeout=8)
+        out = json.loads(proc.stdout or "null") if proc.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+    return out if isinstance(out, dict) and isinstance(out.get("context"), str) else None
+
+
 @server.tool()
 def memory_retrieve(question: str) -> dict:
-    """What memory holds for a question: {context, digest, strong}. context is the block to read before answering."""
+    """What memory holds for a question: {context, digest, strong}. context is the block to read before answering.
+    In cloud mode the answer comes from your Spookling cloud memory first (source: "cloud"), else from the local server."""
+    cloud = _cloud_retrieve(question)
+    if cloud is not None:
+        return {"context": cloud["context"], "source": "cloud", "tier": cloud.get("tier"), "status": cloud.get("status"),
+                "items": cloud.get("items", []), "paused": bool(cloud.get("paused"))}
     return call("/v1/retrieve", {"question": question})
 
 
