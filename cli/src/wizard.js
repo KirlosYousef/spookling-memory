@@ -580,34 +580,47 @@ export async function stopOldServers(ctx) {
  */
 export async function detectInstall({ project = process.cwd(), home = homedir(), probe = stats } = {}) {
   const saved = readInstalls(home), live = await probe(1500).catch(() => null);
-  const found = [];
-  const ctx = newCtx(project);
+  const found = [], skipped = [], seen = new Set();
   const fromKeys = (dir) => { try { const t = readFileSync(join(dir, '.memory', 'keys.env'), 'utf8'); return /^ANTHROPIC_API_KEY=./m.test(t) ? 1 : /^OPENROUTER_API_KEY=./m.test(t) ? 0 : null; } catch { return null; } };
-  const same = resolve(project) === resolve(home);
-  for (const scope of ['user', ...(same ? [] : ['project'])]) {
-    const dir = scope === 'user' ? home : project;
-    const add = (harness, ghost) => {
-      const s = saved.find((i) => installKey(i) === installKey({ harness, scope, project: dir }));
-      const liveTagger = TAGGERS.findIndex((t) => t.model === live?.tagger?.model);
-      const tagger = s?.tagger ?? (liveTagger >= 0 ? liveTagger : null) ?? fromKeys(dir) ?? fromKeys(project) ?? fromKeys(home) ?? 0;
-      found.push({
-        harness, scope, project: dir, tagger, mode: s?.mode === 'cloud' ? 'cloud' : 'keys',
-        ghost: harness === 'claude' ? (s?.ghost ?? ghost) : null,
-        start: s?.start ?? (!!live || !!readPid(dir)),
-      });
-    };
+  // Is something of ours wired for this harness, scope and folder? The same files status reads; an unreadable one is status's to report.
+  const wired = (harness, scope, dir) => {
     try {
-      const settings = readJson(settingsPath(dir, scope)), w = wiring(settings, readJson(mcpPath(dir, scope)));
-      if (w.events.length || w.mcp) add('claude', isOurStatus(settings.statusLine));
-    } catch { /* an unreadable file is status's to report */ }
-    try {
+      if (harness === 'claude') {
+        const settings = readJson(settingsPath(dir, scope)), w = wiring(settings, readJson(mcpPath(dir, scope)));
+        return w.events.length || w.mcp ? { ghost: isOurStatus(settings.statusLine) } : null;
+      }
       const w = wiring(readJson(codexHooksPath(dir, scope)), {});
-      if (w.events.length || codexMcpEntry(readText(codexConfigPath(dir, scope)))) add('codex', null);
-    } catch { /* same */ }
+      return w.events.length || codexMcpEntry(readText(codexConfigPath(dir, scope))) ? { ghost: null } : null;
+    } catch { return null; }
+  };
+  const add = (harness, scope, dir) => {
+    const key = installKey({ harness, scope, project: dir });
+    if (seen.has(key)) return;
+    const w = wired(harness, scope, dir);
+    if (!w) return false;
+    seen.add(key);
+    const s = saved.find((i) => installKey(i) === key);
+    const liveTagger = TAGGERS.findIndex((t) => t.model === live?.tagger?.model);
+    const tagger = s?.tagger ?? (liveTagger >= 0 ? liveTagger : null) ?? fromKeys(dir) ?? fromKeys(project) ?? fromKeys(home) ?? 0;
+    found.push({
+      harness, scope, project: dir, tagger, mode: s?.mode === 'cloud' ? 'cloud' : 'keys',
+      ghost: harness === 'claude' ? (s?.ghost ?? w.ghost) : null,
+      start: s?.start ?? (!!live || !!readPid(dir)),
+    });
+    return true;
+  };
+  // this folder and the user files first, as before. A project folder that is the home folder is its own install, not the user scope.
+  for (const [scope, dir] of [['user', home], ['project', project]]) for (const harness of ['claude', 'codex']) add(harness, scope, dir);
+  // then every install install.json records, wherever this runs from
+  for (const i of saved) {
+    if (i.scope === 'user') { add(i.harness, 'user', home); continue; }
+    const dir = resolve(i.project || '');
+    if (!i.project || !existsSync(dir)) { skipped.push(`${i.harness === 'claude' ? 'Claude Code' : 'Codex'}, project ${i.project || '(no folder)'}: the folder is gone, skipped`); continue; }
+    if (add(i.harness, 'project', dir) === false) skipped.push(`${i.harness === 'claude' ? 'Claude Code' : 'Codex'}, project ${dir}: its Spookling config files are gone, skipped`);
   }
   const elsewhere = [...new Set(saved.filter((i) => i.scope === 'project' && i.project && resolve(i.project) !== resolve(project)
     && existsSync(i.project)).map((i) => resolve(i.project)))];
-  return { targets: found, elsewhere, live };
+  return { targets: found, skipped, elsewhere, live };
 }
 
 /** Do hooks, MCP entries or the spookling command still point at a version folder other than this one? Same references status reads. */
@@ -620,13 +633,15 @@ export function wiredVersions(project = process.cwd(), home = homedir()) {
   if (SHARE) return [];
   const texts = [];
   const take = (f) => { try { return f(); } catch { return undefined; } };
-  for (const scope of ['project', 'user']) {
-    const settings = take(() => readJson(settingsPath(project, scope))), cfg = take(() => readJson(mcpPath(project, scope)));
+  // this folder, the user files, and every project folder install.json records (that still exists)
+  const folders = [['project', project], ['user', project], ...readInstalls(home).filter((i) => i.scope === 'project' && i.project && existsSync(i.project)).map((i) => ['project', resolve(i.project)])];
+  for (const [scope, dir] of folders) {
+    const settings = take(() => readJson(settingsPath(dir, scope))), cfg = take(() => readJson(mcpPath(dir, scope)));
     if (settings) texts.push(...ourHookCommands(settings));
     if (cfg) texts.push(mcpCommand(cfg));
-    const codex = take(() => readJson(codexHooksPath(project, scope)));
+    const codex = take(() => readJson(codexHooksPath(dir, scope)));
     if (codex) texts.push(...ourHookCommands(codex));
-    const have = codexMcpEntry(readText(codexConfigPath(project, scope)));
+    const have = codexMcpEntry(readText(codexConfigPath(dir, scope)));
     if (have) texts.push([have.command, ...have.args].join(' '));
   }
   const desktop = take(() => readJson(claudeDesktopConfigPath()));
@@ -636,10 +651,10 @@ export function wiredVersions(project = process.cwd(), home = homedir()) {
 }
 
 // `init --update`: no cutscene, no prompts, works without a TTY. Returns the exit code.
-export async function initUpdate({ project = process.cwd(), home = homedir(), probe = stats, ps, stop, alive, pause, listener, cwd, find = detectInstall, withStatus = true, allowShare } = {}) {
+export async function initUpdate({ project = process.cwd(), home = homedir(), probe = stats, ps, stop, alive, pause, listener, cwd, find = detectInstall, withStatus = true, allowShare, cloud } = {}) {
   out(`${paint(C.GHOST, `Updating Spookling Memory to ${VERSION}`, true)}  ${paint(C.GREY, project)}\n`);
-  const { targets, elsewhere, live } = await find({ project, home, probe });
-  if (elsewhere.length) info(`Other projects with a project-scope install: ${elsewhere.join(', ')}. Run spookling update in each.`);
+  const { targets, skipped = [], elsewhere = [], live } = await find({ project, home, probe });
+  for (const line of skipped) info(line);
   const inProject = targets.some((t) => t.scope === 'project');
   if (!inProject && resolve(project) !== resolve(home)) info('This folder has no project-scope install, so only your user scope is updated.');
   if (!targets.length) {
@@ -652,10 +667,10 @@ export async function initUpdate({ project = process.cwd(), home = homedir(), pr
   for (const t of targets) {
     out(`\n   ${paint(C.GHOST, `${t.harness === 'claude' ? 'Claude Code' : 'Codex'}, ${t.scope} scope`)}${t.scope === 'project' ? paint(C.GREY, `  ${t.project}`) : ''}\n`);
     Object.assign(shared, { harness: t.harness, tagger: t.tagger, mode: t.mode, ghost: t.ghost !== false, start: t.start });
-    const ctx = { ...newCtx(t.project, t.scope), ghost: true, auto: shared, run };
+    const ctx = { ...newCtx(t.project, t.scope), ghost: true, auto: shared, run, ...(cloud && { cloud }) };
     const st = { live: false, close() {} };
     code = Math.max(code, await steps(ctx, { anim: false, st }));
-    if (ctx.problems.length) break;
+    // a problem with one install does not leave the others on the old version: carry on, the exit code says it failed
   }
   const base = dirname(INSTALL_DIR);
   if (run.label()) out(`   ${paint(C.GREY, run.label())}\n`);
