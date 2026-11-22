@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4 (22 Nov 2026)
+
+- `spookling update` now rewires every Spookling install on the machine, including project folders and a cloud SessionStart hook, so no session keeps running an old version. Before, it only rewired your user files and the folder you ran it from. A project folder you had set up earlier (its `.mcp.json`, `.claude/settings.json`, `.codex/hooks.json` and `.codex/config.toml`) kept pointing at the old version, and a stale `.mcp.json` in your home folder overrode the new MCP entry for every session under it, so the new tools were missing. Now one `spookling update` (or `init --update`) rewires every install listed in `~/.spookling/install.json`, wherever you run it from. A project folder that no longer exists, or whose Spookling files are gone, is skipped with one line and not recreated. Only Spookling's own entries change; your other hooks, servers and settings stay as they are, and nothing is added that was not there. A problem with one install no longer stops the others from being updated.
+- A cloud SessionStart hook added by an earlier cloud-mode install is rewired on update even when the install record has no mode, instead of staying on an old version folder.
+- `spookling status` and the update notice now check every recorded install, so stale project wiring is reported and `spookling update` heals it.
+
 ## 0.2.3 (19 Nov 2026)
 
 - Cloud mode. `init` now first asks "How should Spookling build memory?": log in and use your Spookling plan (no key, no local tagger, no server to start), or enter API keys as before. In cloud mode the prompt hooks (Claude Code and Codex) ask Spookling for memory first, within about 1.8 s, and fall back to the local server (or say nothing) when offline, logged out, slow or unavailable. Uninformative prompts ("ok", "continue") are skipped on your machine, a repeated prompt is answered from a 60 s cache, and each session is not shown the same item twice. A SessionStart hook injects the project brief once per session. The `memory_retrieve` tool goes cloud first through node, so the token never enters the Python server. `spookling status` shows `mode: cloud, logged in as ..., org ...`. `init --cloud` and `init --keys` skip the question; the mode is stored in `~/.spookling/install.json`. Question text is never logged.
