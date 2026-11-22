@@ -26,7 +26,7 @@ exports.retrieve = async (p) => {
   } catch { return null; }
 };
 
-// What a session start adds, once per session, else null: { context, rules, brief, rulesCached }. context is the project rules
+// What a session start adds, once per session, else null: { context, rules, brief }. context is the project rules
 // first (never cut for the brief), then the brief, within START_MAX (Claude Code's 10,000-character cap for additionalContext).
 const START_MAX = 10000;
 exports.brief = async (p) => {
@@ -35,13 +35,12 @@ exports.brief = async (p) => {
     const b = l && await l.cloudBrief({ cwd: cwdOf(p), sessionId: typeof p.session_id === 'string' ? p.session_id : undefined });
     if (!b || typeof b !== 'object') return null;
     const context = l.startContext(b, START_MAX);
-    return context ? { context, rules: !!b.rules, brief: !!b.brief, rulesCached: !!b.rulesCached } : null;
+    return context ? { context, rules: !!b.rules, brief: !!b.brief } : null;
   } catch { return null; }
 };
 
 // The line the user sees: what was added, in words.
 exports.startMessage = (b) => {
   if (!b.rules) return 'project brief';
-  const rules = b.rulesCached ? 'project rules (offline copy)' : 'project rules';
-  return b.brief ? `${rules} and brief` : rules;
+  return b.brief ? 'project rules and brief' : 'project rules';
 };

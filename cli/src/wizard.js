@@ -2,7 +2,7 @@
 import process from 'node:process';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,7 @@ import { pendingShares, pendingUploads, skipText, skippedSessionIds, uploadProbl
 import { readCredentials, writeFileSecure } from './credentials.js';
 import { createCloud } from './cloud.js';
 import { installedMode } from './cloud-retrieve.js';
+import { VERSION } from './version.js';
 import { compareVersions, updateAvailable } from './registry.js';
 import { createRun, tilde } from './backup.js';
 import { checkToml } from './toml-check.js';
@@ -29,7 +30,7 @@ import { liveOrgs } from './share.js';
 
 const WIN = process.platform === 'win32';
 const ROOT = fileURLToPath(new URL('../..', import.meta.url)).replace(/[\\/]$/, '');
-export const VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
+export { VERSION };
 // a folder per version, out of the npx cache (npm may clear it); a \\wsl.localhost clone is wired in place
 const SHARE = WIN && wslShare(join(ROOT, 'server'));
 export const INSTALL_DIR = SHARE ? ROOT
@@ -365,7 +366,7 @@ function vendorUploader(from, dir) {
   const lib = join(dir, 'hooks', 'lib');
   mkdirSync(lib, { recursive: true });
   writeFileSync(join(lib, 'package.json'), '{ "type": "module" }\n');
-  for (const f of ['cloud.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js', 'repo-url.js', 'cloud-retrieve.js', 'cloud-retrieve-invoke.js', 'rules.js', 'delete.js']) cpSync(join(src, f), join(lib, f));
+  for (const f of ['cloud.js', 'version.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js', 'repo-url.js', 'cloud-retrieve.js', 'cloud-retrieve-invoke.js', 'rules.js', 'delete.js']) cpSync(join(src, f), join(lib, f));
 }
 
 export function install(from, dir) {
@@ -611,7 +612,12 @@ export async function detectInstall({ project = process.cwd(), home = homedir(),
 
 /** Do hooks, MCP entries or the spookling command still point at a version folder other than this one? Same references status reads. */
 export function staleWiring(project = process.cwd(), home = homedir()) {
-  if (SHARE) return false;
+  return wiredVersions(project, home).some((v) => v !== VERSION);
+}
+
+/** Every version folder the hooks, MCP entries and the spookling command point at (empty for a WSL share, which is wired in place). */
+export function wiredVersions(project = process.cwd(), home = homedir()) {
+  if (SHARE) return [];
   const texts = [];
   const take = (f) => { try { return f(); } catch { return undefined; } };
   for (const scope of ['project', 'user']) {
@@ -626,7 +632,7 @@ export function staleWiring(project = process.cwd(), home = homedir()) {
   const desktop = take(() => readJson(claudeDesktopConfigPath()));
   if (desktop) texts.push(mcpCommand(desktop));
   texts.push(readText(cliLinkPath(home)));
-  return texts.some((t) => installVersions(t).some((v) => v !== VERSION));
+  return [...new Set(texts.flatMap((t) => installVersions(t)))].sort();
 }
 
 // `init --update`: no cutscene, no prompts, works without a TTY. Returns the exit code.
@@ -1087,15 +1093,27 @@ function refTracker() {
   return { refs, hookRefs, track };
 }
 
+// True the first time this file is seen for this kind of entry; the real path decides, so a symlink or project === home counts once.
+function firstSight(seen, kind, file) {
+  let real;
+  try { real = realpathSync(file); } catch { real = resolve(file); }
+  const key = `${kind}\0${process.platform === 'win32' || process.platform === 'darwin' ? real.toLowerCase() : real}`;
+  if (seen.has(key)) return false;
+  seen.add(key);
+  return true;
+}
+
 // Claude Code's hooks and MCP entries, in the project and user files and the desktop app's config.
 function scanClaude({ project, home, ctx, line, track }) {
-  const where = { events: [], mcp: [] }, got = new Set();
+  const where = { events: [], mcp: [] }, got = new Set(), seen = new Set();
   for (const scope of ['project', 'user']) {
     try {
-      const settings = readJson(settingsPath(project, scope)), cfg = readJson(mcpPath(project, scope));
+      const sp = settingsPath(project, scope), mp = mcpPath(project, scope);
+      const settings = readJson(sp), cfg = readJson(mp);
       const w = wiring(settings, cfg);
-      if (w.events.length) where.events.push(`${w.events.join(', ')} in ${rel(ctx, settingsPath(project, scope))}`);
-      if (w.mcp) where.mcp.push(`${MCP_NAME} in ${rel(ctx, mcpPath(project, scope))}`);
+      // project === home: both scopes are the same file, listed once
+      if (w.events.length && firstSight(seen, 'hooks', sp)) where.events.push(`${w.events.join(', ')} in ${rel(ctx, sp)}`);
+      if (w.mcp && firstSight(seen, 'mcp', mp)) where.mcp.push(`${MCP_NAME} in ${rel(ctx, mp)}`);
       w.events.forEach((ev) => got.add(ev));
       ourHookCommands(settings).forEach((c) => track('hooks', c, 'claude'));
       track('MCP entries', mcpCommand(cfg));
@@ -1103,7 +1121,7 @@ function scanClaude({ project, home, ctx, line, track }) {
   }
   try {
     const desktop = claudeDesktopConfigPath(), cfg = readJson(desktop);
-    if (wiring({}, cfg).mcp) where.mcp.push(`${MCP_NAME} in ${rel(ctx, desktop)}`);
+    if (wiring({}, cfg).mcp && firstSight(seen, 'mcp', desktop)) where.mcp.push(`${MCP_NAME} in ${rel(ctx, desktop)}`);
     track('MCP entries', mcpCommand(cfg));
   } catch (e) { line('config', e.message, false); }
   track('the spookling command', readText(cliLinkPath(home)));
@@ -1112,20 +1130,20 @@ function scanClaude({ project, home, ctx, line, track }) {
 
 // Codex's hooks.json and config.toml, project and user.
 function scanCodex({ project, ctx, line, track }) {
-  const got = new Set(), where = [], mcpWhere = [];
+  const got = new Set(), where = [], mcpWhere = [], seen = new Set();
   for (const scope of ['project', 'user']) {
     const cp = codexHooksPath(project, scope), cc = codexConfigPath(project, scope);
     try {
       const settings = readJson(cp), w = wiring(settings, {});
-      if (w.events.length) where.push(`${w.events.join(', ')} in ${rel(ctx, cp)}`);
+      if (w.events.length && firstSight(seen, 'hooks', cp)) where.push(`${w.events.join(', ')} in ${rel(ctx, cp)}`);
       w.events.forEach((ev) => got.add(ev));
       ourHookCommands(settings).forEach((c) => track('hooks', c, 'codex'));
     } catch (e) { line('config', e.message, false); }
     const have = codexMcpEntry(readText(cc));
-    if (have) {
+    if (have && firstSight(seen, 'mcp', cc)) {
       mcpWhere.push(`${MCP_NAME} in ${rel(ctx, cc)}${scope === 'project' ? ' (Codex loads it only for a trusted project)' : ''}`);
-      track('MCP entries', [have.command, ...have.args].join(' '));
     }
+    if (have) track('MCP entries', [have.command, ...have.args].join(' '));
   }
   return { got, where, mcpWhere };
 }
@@ -1202,7 +1220,8 @@ export async function status(project = process.cwd(), get = stats, home = homedi
   const { where, events } = scanClaude({ project, home, ctx, line, track });
   const hookFiles = claudeHookFiles(cloudOn), nHooks = Object.keys(hookFiles).length;
   line('hooks', where.events.join('; ') || 'none in .claude/settings.json or ~/.claude/settings.json', events.length === nHooks);
-  const ghostIn = ['project', 'user'].filter((sc) => { try { return isOurStatus(readJson(settingsPath(project, sc)).statusLine); } catch { return false; } });
+  const ghostSeen = new Set();
+  const ghostIn = ['project', 'user'].filter((sc) => { try { return isOurStatus(readJson(settingsPath(project, sc)).statusLine) && firstSight(ghostSeen, 'ghost', settingsPath(project, sc)); } catch { return false; } });
   line('ghost', ghostIn.length ? `in the status line (${ghostIn.map((sc) => rel(ctx, settingsPath(project, sc))).join(', ')})`
     : 'not in the status line (init asks; --no-ghost skips it)', true);
   line('mcp', where.mcp.join('; ') || 'no entry in .mcp.json or ~/.claude.json', where.mcp.length > 0);
@@ -1234,7 +1253,8 @@ export async function status(project = process.cwd(), get = stats, home = homedi
     else line('orgs', `${live.orgs.length ? live.orgs.map((o) => o.name + (o.default ? ' (default)' : '')).join(', ') : 'none'}; checked just now${live.note ? `. ${live.note}` : ''}`, live.orgs.length > 0);
   }
   if (!noUpdate) {
-    const v = await updateAvailable({ home, current: VERSION, ...update }).catch(() => null);
+    // one line, the newest version, only if it is newer than the running code and than every version the hooks point at
+    const v = await updateAvailable({ home, current: VERSION, hooksAt: refs.map(([, rv]) => rv), ...update }).catch(() => null);
     if (v) line('update', `${v} is available. Run spookling update.`, false);
   }
   await uploadLines(line, home);

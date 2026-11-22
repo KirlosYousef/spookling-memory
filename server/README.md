@@ -89,6 +89,7 @@ and the rule (old and new text for a change). With no dialog they write nothing 
 `spookling rules set|remove ...` command; with several orgs and none named the user picks one in a dialog first; a `409
 rule_changed` returns the rule's current text and tells the model to ask the user again. The server instructions tell the model
 that rules change only this way, never to claim the user agreed, and to raise a conflict with a rule before writing code.
+The rules themselves reach the model from the cloud engine (hooks, cloud mode only): at session start and on any prompt after a rule changed. This server holds none of them and keeps no copy.
 
 ## Hooks
 

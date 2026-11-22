@@ -5,6 +5,7 @@ The install wizard for Spookling Memory. Node 18 or newer, no dependencies. Work
 ```bash
 npx spookling init                 # the intro, then the step-by-step install, for this project
 npx spookling init --scope user    # the same, wired for every project you open in Claude Code
+npx spookling init --cloud | --keys   # skip the first question: build memory in the cloud from your Spookling plan (logs in), or use your own API keys
 npx spookling demo                 # the whole install as you would see it, answered for you; writes nothing
 npx spookling status               # is the server up, what is wired (project and user files), which tagger, and a `cloud` line (see Team memory); exit 0 when all is well
 npx spookling backfill [--since <date>] [--all]   # log turns missing from .memory/ back from the Claude Code transcripts (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects); this project's, or every project's with --all; no duplicates, so it is safe to repeat; the uploader sends them with the next session stop
@@ -15,6 +16,7 @@ npx spookling login                # sign in in the browser, pick a default org,
 npx spookling logout               # forget the saved token
 npx spookling whoami               # name and email, the API URL, the default org
 npx spookling orgs                 # the orgs you belong to, as id and name
+npx spookling orgs default [<org id or name>]   # show the default org as the API reports it, or change it (two orgs with one name: pass the id)
 npx spookling tokens               # your CLI tokens: id, label, created, last used, (this device)
 npx spookling tokens revoke <id>   # revoke one (a unique prefix of 6+ characters works); this device's token also forgets the login
 npx spookling tokens revoke --all  # revoke every token, this device included
@@ -210,6 +212,7 @@ After approval, three more steps, none of which can fail the login:
 
 ## Advanced
 
+- **Cloud mode:** chosen at `init` (or with `--cloud`) and saved in `~/.spookling/install.json`. The prompt hooks ask the API within `SPOOKLING_CLOUD_BUDGET_MS` (default about 1800) and fall back to the local server; `SPOOKLING_MODE=local` turns cloud retrieval off for a shell. See [Cloud mode](../README.md#cloud-mode).
 - **A different server:** `spookling login --api-url <url>` (or `SPOOKLING_API_URL` for that login) picks the origin; it is saved as `apiUrl` with the token.
 - **CI and headless use:** `SPOOKLING_TOKEN` is used instead of the saved login, and only with an explicit `SPOOKLING_API_URL` that passes the https rule; `whoami` then shows no API line.
 - **Origin pinning:** a saved login only talks to the server it was issued by (an older credentials file without `apiUrl` is pinned to the shipped app). A different `SPOOKLING_API_URL` is ignored for authenticated calls: interactive commands print one line saying so, hooks say nothing. Origins must be `https`, except `localhost`, `127.0.0.1` and `[::1]`.
@@ -239,7 +242,7 @@ Optional, and never part of `init`. The full picture is in the [main README](htt
   - API refusals are plain lines: `rule_changed` (409) shows the rule's current text and stops; `rule_exists`, `rule_unchanged`, `rule_limit` (20 active) and `rule_text` (1 to 300 characters) say what happened; nothing was changed in each case.
   - The MCP tools use `team-invoke.js` `rules-get` (read, and the project/org resolver), `rules-set` and `rules-remove` (write at once with `via: "mcp"`; the MCP tool has asked the user by then). They are not in `--help`.
   - `init` writes `/spookling-rules` to `.claude/commands/spookling-rules.md`. Typing it is not a yes: it lists the rules with `project_rules`, and a change goes through `project_rule_set` / `project_rule_remove`, which open the dialog. `uninstall` removes it when it is ours.
-  - Session start (cloud mode): `cloudBrief` returns `{ rules, brief, rulesCached }` from `GET /memory/context`; the hooks inject the rules first, whole, and cut the brief when the two pass 10,000 characters (Codex SessionStart now also sets `additionalContextLimit: 4000`). Each successful fetch writes `~/.spookling/rules-cache/<sha1(projectKey)>.json` (`{ projectKey, rules, fetchedAt }`, `rules: null` when there are none); when the API fails or runs out of time the cached rules are injected with a note that they are a cached copy.
+  - Session start (cloud mode): `cloudBrief` returns `{ rules, brief }` from `GET /memory/context`; the hooks inject the rules first, whole, and cut the brief when the two pass 10,000 characters (Codex SessionStart now also sets `additionalContextLimit: 4000`). The response's `ruleIds` (`rule:<ruleId>@<version>`) are added to the session's shown ids in `~/.spookling/cloud-shown.json` (rule ids are never trimmed away for other items), so the first prompt's `POST /memory/retrieve` does not repeat the block; every item id a retrieve returns, rule items included, is recorded the same way, and the 60 s answer cache strips a `<project-rules>` block instead of replaying it. A later prompt gets the block again only after a rule changed. There is no local copy of the rules: offline or slow means no rules block, and the hook never fails the session.
 - **Forks.** The server (`hooks.py`, `fork_of`) spots a forked Claude Code transcript: its leading lines carry another `sessionId` (the parent's) than the file's own.
   - Record: `{parent, relation, branched_at, copied}` in `forks.json` beside `log.jsonl` (which keeps the whole conversation, as before).
   - Upload: the uploader reads that file. A new fork sends only the turns after the first `copied`, numbered from 0, and its PUT carries `parentSessionId`, `branchedAtTurn` and `relation`; the title comes from its first new user message.

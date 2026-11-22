@@ -61,6 +61,7 @@ def hook(runner, name, payload, url, **env):
 def test_mcp_tools(live, tmp_path, monkeypatch):
     url, store = live
     monkeypatch.setenv("SPOOKLING_MEMORY_URL", url)
+    monkeypatch.setattr(M, "_cloud_retrieve", lambda q: None)  # a machine wired for cloud mode must not answer from the real cloud
     names = {t.name for t in asyncio.run(M.server.list_tools())}
     assert names == {"memory_retrieve", "memory_ingest", "memory_compact", "memory_reset", "memory_export",
                      "memory_import", "memory_stats", "team_sessions", "team_session", "team_orgs", "memory_share",

@@ -106,6 +106,12 @@ const cachePath = (home) => join(stateDir(home), 'cloud-cache.json');
 const shownPath = (home) => join(stateDir(home), 'cloud-shown.json');
 const hashOf = (q) => createHash('sha256').update(String(q).trim().replace(/\s+/g, ' ').toLowerCase()).digest('hex').slice(0, 32);
 
+// A rules block is shown once per rule version. A cached answer must never replay it (a rule may have changed, or the block was
+// already shown), so the cache holds, and gives back, the answer without the block and its rule items.
+const RULES_BLOCK = /<project-rules[\s\S]*?<\/project-rules>\s*/g;
+const withoutRules = (o) => (o.items.some((i) => isRuleId(i?.id)) || o.context.includes('<project-rules')
+  ? { ...o, context: o.context.replace(RULES_BLOCK, '').trim(), items: o.items.filter((i) => !isRuleId(i?.id)) } : o);
+
 function cacheGet(home, key, now) {
   const hit = readJson(cachePath(home)).entries?.[key];
   return hit && Number.isFinite(hit.at) && now - hit.at >= 0 && now - hit.at < CACHE_TTL_MS ? hit.data : null;
@@ -121,6 +127,14 @@ function cachePut(home, key, data, now) {
 export function shownIds(home, sessionId) {
   const ids = readJson(shownPath(home)).sessions?.[sessionId]?.ids;
   return Array.isArray(ids) ? ids.filter((i) => typeof i === 'string') : [];
+}
+// Keep the newest ids, but never drop a rule id (`rule:<id>@<version>`) for others: a dropped one would bring the whole block back.
+// Rule ids end up last, so the newest-first slice a request takes still carries them.
+const isRuleId = (i) => typeof i === 'string' && i.startsWith('rule:');
+function trimIds(list, max) {
+  const uniq = [...new Set(list)];
+  const rules = uniq.filter(isRuleId).slice(-Math.floor(max / 2));
+  return [...uniq.filter((i) => !isRuleId(i)).slice(-(max - rules.length)), ...rules];
 }
 function updateShown(home, sessionId, now, fn) {
   const sessions = readJson(shownPath(home)).sessions ?? {};
@@ -142,7 +156,7 @@ function withBudget(work, ms) {
 const budgetFrom = (env, def) => { const n = Number(env.SPOOKLING_CLOUD_BUDGET_MS); return Number.isFinite(n) && n > 0 ? n : def; };
 // Item ids are local to a space (every space has an f1 and an m1), so with two spaces asked a bare id would hide another space's item.
 // The engine reads `<spaceId>|<id>` as "this space only".
-const ids = (items) => (Array.isArray(items) ? items.map((i) => (typeof i?.id === 'string' && typeof i.spaceId === 'string' && i.spaceId && !i.spaceId.includes('|') ? `${i.spaceId}|${i.id}` : i?.id)).filter((i) => typeof i === 'string') : []);
+const ids = (items) => (Array.isArray(items) ? items.map((i) => (typeof i?.id === 'string' && !isRuleId(i.id) && typeof i.spaceId === 'string' && i.spaceId && !i.spaceId.includes('|') ? `${i.spaceId}|${i.id}` : i?.id)).filter((i) => typeof i === 'string') : []);
 
 /**
  * Ask the cloud what memory holds for a question. Returns { context, items, tier, status, spaces, paused, cached } when the cloud
@@ -162,46 +176,31 @@ export async function cloudRetrieve({
       const id = await identify(cwd, { home, env });
       const key = `${mode}|${id.projectKey}|${sessionId ?? ""}|${hashOf(question)}`; // per session: its answer was cut by what that session had seen
       const hit = cacheGet(home, key, now());
-      if (hit) return { ...hit, cached: true };
+      if (hit) return { ...withoutRules({ context: '', items: [], ...hit }), cached: true };
       const client = cloud ?? createCloud({ env, home, ...(fetchImpl && { fetchImpl }) });
       const left = Math.max(50, budget - (Date.now() - started));
-      const seen = (sessionId ? shownIds(home, sessionId) : []).filter((i) => i.length <= SEND_ID_CHARS).slice(-SEND_IDS_MAX);
+      const seen = (sessionId ? shownIds(home, sessionId) : []).filter((i) => i.length <= SEND_ID_CHARS);
+      const sent = trimIds(seen, SEND_IDS_MAX);
       const body = { mode, question, ...(id.projectKey && { projectKey: id.projectKey }), ...(id.repoUrl && { repoUrl: id.repoUrl }),
-        ...(id.project && { project: id.project }), ...(sessionId && { sessionId }), ...(seen.length && { shownIds: seen }), clientTs: new Date(now()).toISOString() };
+        ...(id.project && { project: id.project }), ...(sessionId && { sessionId }), ...(sent.length && { shownIds: sent }), clientTs: new Date(now()).toISOString() };
       const data = await client.retrieve({ body, timeoutMs: left });
       if (!data || (data.status !== 'ok' && data.status !== 'empty')) return null;
       const out = { context: typeof data.context === 'string' ? data.context : '', items: Array.isArray(data.items) ? data.items : [],
         tier: data.tier ?? null, status: data.status, spaces: Array.isArray(data.spaces) ? data.spaces : [], ...(data.paused && { paused: true }), cached: false };
-      cachePut(home, key, out, now());
+      cachePut(home, key, withoutRules(out), now());
       if (sessionId && out.items.length) {
-        updateShown(home, sessionId, now(), (cur) => ({ ids: [...new Set([...(cur.ids ?? []), ...ids(out.items)])].slice(-SHOWN_IDS_MAX) }));
+        updateShown(home, sessionId, now(), (cur) => ({ ids: trimIds([...(cur.ids ?? []), ...ids(out.items)], SHOWN_IDS_MAX) }));
       }
       return out;
     })(), budget);
   } catch { return null; }
 }
 
-// ---- project rules: an offline copy per project, so a session started without the network still gets them
-
-const rulesCachePath = (home, projectKey) => join(stateDir(home), 'rules-cache', `${createHash('sha1').update(projectKey).digest('hex')}.json`);
-
-/** Remember the rules text (or that there are none) the API gave for a project. Never throws; never writes into the repo. */
-export function writeRulesCache(home, projectKey, rules, now = Date.now) {
-  writeJson(rulesCachePath(home, projectKey), { projectKey, rules: typeof rules === 'string' && rules.trim() ? rules : null, fetchedAt: new Date(now()).toISOString() });
-}
-
-/** { rules, fetchedAt } from the last successful fetch for this project, or null. */
-export function readRulesCache(home, projectKey) {
-  const j = readJson(rulesCachePath(home, projectKey));
-  return j.projectKey === projectKey && typeof j.rules === 'string' && j.rules.trim() ? { rules: j.rules, fetchedAt: typeof j.fetchedAt === 'string' ? j.fetchedAt : '' } : null;
-}
-
-const cachedNote = (at) => `(Cached copy of the project rules${at ? ` from ${at.slice(0, 16).replace('T', ' ')} UTC` : ''}: Spookling could not reach the server at session start, so a newer change may be missing. Follow them all the same.)`;
-
 /**
- * What a session start adds, or null: { rules, brief, rulesCached }. rules is the API's ready-made <project-rules> block (or ''),
+ * What a session start adds, or null: { rules, brief }. rules is the API's ready-made <project-rules> block (or ''),
  * brief the project brief when its status is "ok" (or ''). Null when not in cloud mode, already given to this session, no project,
- * or nothing to say. When the API cannot be reached in time, the cached rules of the last successful fetch are used (rulesCached).
+ * or nothing to say. Offline or too slow: null, there is no local copy of the rules. When rules are returned, their item ids
+ * (ruleIds) are recorded as shown for the session, so the first prompt's retrieve does not repeat the block.
  * Marks the session as briefed only when something is returned.
  */
 export async function cloudBrief({ cwd, sessionId, home = homedir(), env = process.env, budgetMs, now = Date.now, cloud, fetchImpl } = {}) {
@@ -216,18 +215,13 @@ export async function cloudBrief({ cwd, sessionId, home = homedir(), env = proce
     const client = cloud ?? createCloud({ env, home, ...(fetchImpl && { fetchImpl }) });
     const data = await withBudget(client.projectContext({ projectKey, timeoutMs: Math.max(50, budget - (Date.now() - started)) }),
       Math.max(50, budget - (Date.now() - started)));
-    let rules = '', rulesCached = false;
-    const brief = data?.status === 'ok' && typeof data.brief === 'string' ? data.brief.trim() : '';
-    if (data && typeof data === 'object') {
-      rules = typeof data.rules === 'string' ? data.rules.trim() : '';
-      writeRulesCache(home, projectKey, rules, now);
-    } else {
-      const hit = readRulesCache(home, projectKey);
-      if (hit) { rules = `${cachedNote(hit.fetchedAt)}\n${hit.rules.trim()}`; rulesCached = true; }
-    }
+    if (!data || typeof data !== 'object') return null;
+    const brief = data.status === 'ok' && typeof data.brief === 'string' ? data.brief.trim() : '';
+    const rules = typeof data.rules === 'string' ? data.rules.trim() : '';
     if (!brief && !rules) return null;
-    if (sessionId) updateShown(home, sessionId, now(), () => ({ briefed: true }));
-    return { rules, brief, rulesCached };
+    const ruleIds = rules && Array.isArray(data.ruleIds) ? data.ruleIds.filter((i) => typeof i === 'string' && i && i.length <= SEND_ID_CHARS) : [];
+    if (sessionId) updateShown(home, sessionId, now(), (cur) => ({ briefed: true, ...(ruleIds.length && { ids: trimIds([...(cur.ids ?? []), ...ruleIds], SHOWN_IDS_MAX) }) }));
+    return { rules, brief };
   } catch { return null; }
 }
 

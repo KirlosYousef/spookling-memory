@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Claude Code SessionStart hook, wired in cloud mode only: inject the project rules, then the project brief, once per session
-// from the Spookling cloud (the rules from the offline copy when the cloud is slow or offline).
+// from the Spookling cloud (nothing when the cloud is slow or offline: there is no local copy of the rules).
 // Prints nothing when there is neither, or this session already has them. Never fails the session.
 if (process.env.SPOOKLING_TAGGING) process.exit(0);
 const cloud = require('./cloud.cjs');

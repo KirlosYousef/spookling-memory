@@ -1,5 +1,4 @@
 // Small client for the team-memory control plane. SPOOKLING_API_URL, else apiUrl saved at login, else the shipped app.
-import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { readCredentials } from './credentials.js';
 
@@ -72,9 +71,8 @@ export function clean(value) {
   return String(value ?? '').replace(/[^\P{C}\n]/gu, '');
 }
 
-export const VERSION = (() => {
-  try { return JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; }
-})();
+import { VERSION } from './version.js';
+export { VERSION };
 export const USER_AGENT = `spookling/${VERSION} (${process.platform}; node/${process.versions.node})`;
 
 const NET_CODES = new Set(['TypeError', 'TimeoutError', 'AbortError', 'NETWORK', 'ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT',
