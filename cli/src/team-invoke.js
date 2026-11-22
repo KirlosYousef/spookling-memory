@@ -17,11 +17,9 @@ const tools = {
   autoshare: setProjectAutoShare,
   delete: deleteSession,
   'delete-all': deleteAllSessions,
-  // project rules: rules-get is read-only (and resolves the project and org); rules-set and rules-remove write at once, because the
-  // MCP tool has the user's yes from its own dialog by then. Not in the CLI's help: people use `spookling rules`, which asks.
+  // project rules: read-only (it resolves the project and org). The MCP server never writes a rule: a person types /spookling-rules
+  // or runs `spookling rules`, so there is no rules-set or rules-remove here.
   'rules-get': rules.get,
-  'rules-set': rules.set,
-  'rules-remove': rules.remove,
 };
 // an unknown name is an error, not a quiet team_sessions
 const out = Object.hasOwn(tools, name) ? await tools[name](args) : { error: `Unknown team tool: ${String(name).slice(0, 40)}` };

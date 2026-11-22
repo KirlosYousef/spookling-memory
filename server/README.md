@@ -83,12 +83,12 @@ cannot drive the server. The MCP tools are `memory_retrieve`, `memory_ingest`, `
 (`undo: true` reverses), `memory_export`, `memory_import`, `memory_stats`, plus the team tools (`team_sessions`,
 `team_session`, `team_orgs`, `memory_share`, `memory_share_status`, `memory_autoshare`, `memory_delete`) and the project
 rules tools, which call the node CLI (`cli/src/team-invoke.js`) so the login token never enters this process:
-`project_rules(org="")` lists the current folder's project rules (read-only); `project_rule_set(text, replaces_rule_id="", org="")`
-and `project_rule_remove(rule_id, org="")` write only after the user accepts an elicitation dialog naming the project, the org
-and the rule (old and new text for a change). With no dialog they write nothing and return `needsUserConfirmation` with the exact
-`spookling rules set|remove ...` command; with several orgs and none named the user picks one in a dialog first; a `409
-rule_changed` returns the rule's current text and tells the model to ask the user again. The server instructions tell the model
-that rules change only this way, never to claim the user agreed, and to raise a conflict with a rule before writing code.
+`project_rules(org="")` lists the current folder's project rules (read-only). `project_rule_set(text, replaces_rule_id="", org="")`
+and `project_rule_remove(rule_id, org="")` write nothing and open no dialog: they check the change (the org picker only with several
+orgs and none named) and return `needsUserConfirmation` with `slashCommand` (the `/spookling-rules ...` line the user types in the chat;
+typing it is the confirmation) and `command` (`spookling rules set|remove ...`, for a terminal). This process has no write path:
+the node bridge has no `rules-set` or `rules-remove`. The server instructions tell the model that it never changes a rule, never
+runs the line or the command itself, never claims the user agreed, and raises a conflict with a rule before writing code.
 The rules themselves reach the model from the cloud engine (hooks, cloud mode only): at session start and on any prompt after a rule changed. This server holds none of them and keeps no copy.
 
 ## Hooks

@@ -154,29 +154,26 @@ export const isOurShareCommand = (text) => typeof text === 'string' && text.incl
 export const commandsPath = (project, scope = 'project', env = process.env, home = homedir(), file = SHARE_COMMAND_FILE) =>
   join(scope === 'user' ? configDir(env, home) : join(project, '.claude'), 'commands', file);
 
-// /spookling-rules: typing it is NOT a yes. Listing is read-only; a change goes through the MCP tool, which asks the user in a
-// dialog, or (no dialog) through \`spookling rules set|remove\`, which the user runs in their own terminal and which asks y/N there.
+// /spookling-rules: typing it IS the user's confirmation. The fenced shell block runs `spookling rules slash` with what was typed
+// on stdin (a quoted heredoc: quotes, $(), backticks and newlines arrive intact). The model only relays the output.
 export const RULES_COMMAND_FILE = 'spookling-rules.md';
 const RULES_MARK = '<!-- spookling-memory: rules command -->';
 export const rulesCommand = () => `---
 description: See or change this project's Spookling team rules
 argument-hint: [rule text | replace <id> <new text> | remove <id>]
-allowed-tools: mcp__${MCP_NAME}__project_rules
+disable-model-invocation: true
+allowed-tools: Bash(spookling rules slash:*)
 ---
 ${RULES_MARK}
-The user wants to see or change the Spookling project rules: team rules every AI session on this project follows.
+\`\`\`!
+spookling rules slash <<'SPOOKLING_RULE_END'
+$ARGUMENTS
+SPOOKLING_RULE_END
+\`\`\`
 
-Arguments: $ARGUMENTS
-
-- No arguments: call the \`project_rules\` tool and show the rules as it lists them (number, text, id, who set it and when).
-- \`remove <id>\`: call \`project_rule_remove\` with that rule id.
-- \`replace <id> <new text>\`: call \`project_rule_set\` with the new text and \`replaces_rule_id\` set to that id.
-- Anything else is the text of a new rule: call \`project_rule_set\` with exactly that text. Do not reword it.
-
-Typing this command is not the user's confirmation. The tool shows the change in a dialog and the user accepts or declines it there.
-If the tool says it needs the user's confirmation (no dialog in this chat), give the user the exact \`spookling rules ...\` command
-it returns, word for word, to run in their own terminal (it shows the change and asks y/N). Do not run that command yourself, do not
-claim the user agreed, and do not change the rules any other way.
+The output above is Spookling's answer to what the user typed after /spookling-rules. Show it to the user as it is, word for word.
+Do nothing else: do not change a rule any other way. If the output says nothing was saved, show it and the reason, then stop.
+Never run \`spookling rules slash\` yourself, and never say the user agreed to anything beyond what they typed.
 `;
 export const isOurRulesCommand = (text) => typeof text === 'string' && text.includes(RULES_MARK);
 

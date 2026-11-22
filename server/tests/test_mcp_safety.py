@@ -1,4 +1,4 @@
-"""MCP write tools: sharing needs the user's yes (elicitation), and archives stay inside ~/.spookling/exports/."""
+"""MCP write tools: sharing needs the user's yes (elicitation), project rules are only checked here (the user types them), and archives stay inside ~/.spookling/exports/."""
 import asyncio
 import json
 import os
@@ -178,8 +178,6 @@ def team(n, a):
         o = ("o2", "Beta") if a.get("org") in ("o2", "beta", "Beta") else ("o1", "Acme")
         return {"orgId": o[0], "orgName": o[1], "project": "shop", "projectKey": "dir:shop", "removed": [],
                 "rules": [{"id": "r_1", "text": "Use MVVM.", "version": 3, "status": "active"}]}
-    if n in ("rules-set", "rules-remove"):
-        return {"ok": True, "did": n, "args": a, "rule": {"id": a.get("replaces") or a.get("ruleId") or "r_new", "text": a.get("text", "Use MVVM.")}}
     return {"ok": True, "did": n, "args": a}
 
 M._team = team
@@ -196,13 +194,10 @@ TOOLS = {
     "memory_autoshare": ({"project": "shop", "org": "acme", "backfill": True}, {"project": "shop", "backfill": True}, "autoshare",
                          "spookling autoshare shop on --org Acme --backfill", "7 session"),
     "memory_delete": ({"session_id": "sid1"}, {"session_id": "sid1"}, "delete", "spookling delete sid1", "'sid1'"),
-    "project_rule_set": ({"text": "Use tabs.", "org": "acme"}, {"text": "Use tabs."}, "rules-set", "spookling rules set 'Use tabs.' --org Acme", "Use tabs."),
-    "project_rule_remove": ({"rule_id": "r_1", "org": "acme"}, {"rule_id": "r_1"}, "rules-remove", "spookling rules remove r_1 --org Acme", "Use MVVM."),
 }
-SEVERAL_TOOLS = ["memory_share", "memory_autoshare", "project_rule_set", "project_rule_remove"]
-ORG_KEY = {"project_rule_set": '"orgId": "o2"', "project_rule_remove": '"orgId": "o2"'}  # the key the write carries; others use "org"
-NO_ORG_CMD = {"memory_share": "spookling share sid1", "memory_autoshare": "spookling autoshare shop on --org <org>",
-              "project_rule_set": "spookling rules set 'Use tabs.'", "project_rule_remove": "spookling rules remove r_1"}
+SEVERAL_TOOLS = ["memory_share", "memory_autoshare"]
+ORG_KEY = {}  # the key the write carries; others use "org"
+NO_ORG_CMD = {"memory_share": "spookling share sid1", "memory_autoshare": "spookling autoshare shop on --org <org>"}
 
 
 def stdio_call(protocol, caps, answer, tool, args, several=False):
@@ -713,7 +708,7 @@ def test_cloud_retrieve_end_to_end_with_the_real_node_script(monkeypatch, tmp_pa
         assert M._cloud_retrieve("which database did we pick?") is None
 
 
-# ---- project rules: a write only after the user's own yes in the dialog; otherwise the exact terminal command
+# ---- project rules: the MCP tools only read and check. Nothing is written from here: the user types /spookling-rules or runs the CLI.
 
 RULE = {"id": "r_1", "text": "Use MVVM for all UI code.", "version": 2, "status": "active", "createdBy": "Ada",
         "createdAt": "2026-11-18T09:00:00.000Z", "updatedBy": "Lin", "updatedAt": "2026-11-18T10:00:00.000Z"}
@@ -721,46 +716,46 @@ RULE = {"id": "r_1", "text": "Use MVVM for all UI code.", "version": 2, "status"
 
 @pytest.fixture
 def rules_team(monkeypatch):
-    """rules-get answers like the CLI: one org, or `needOrg` when state["several"] and no org was passed."""
-    state = {"several": False, "write": None}
+    """rules-get answers like the CLI: one org, or `needOrg` when state["several"] and no org was passed. Any other team call is recorded
+    as a write and fails the test: the MCP process has no write path."""
+    state = {"several": False, "error": None}
     calls = []
 
     def fake(name, args):
         calls.append((name, args))
-        if name == "rules-get":
-            if state["several"] and not args.get("org"):
-                return {"error": "You are in several orgs: 'One', 'Two'. Run again with --org '<name>'.", "needOrg": True,
-                        "orgs": [{"id": "o1", "name": "One"}, {"id": "o2", "name": "Two"}]}
-            org = {"o1": "One", "o2": "Two"}.get(args.get("org"), "Acme")
-            return {"orgId": args.get("org") if args.get("org") in ("o1", "o2") else "o9", "orgName": org, "project": "shop",
-                    "projectKey": "git:github.com/acme/shop", "rules": [dict(RULE)], "removed": []}
-        if state["write"]:
-            return state["write"]
-        if name == "rules-set":
-            return {"ok": True, "action": "replaced" if args.get("replaces") else "set", "rule": {**RULE, "id": args.get("replaces") or "r_new", "text": args["text"]}}
-        return {"ok": True, "action": "removed", "rule": {**RULE, "status": "removed"}}
+        if name != "rules-get":
+            return {"error": f"unexpected team call {name}"}
+        if state["error"]:
+            return {"error": state["error"]}
+        if state["several"] and not args.get("org"):
+            return {"error": "You are in several orgs: 'One', 'Two'. Run again with --org '<name>'.", "needOrg": True,
+                    "orgs": [{"id": "o1", "name": "One"}, {"id": "o2", "name": "Two"}]}
+        org = {"o1": "One", "o2": "Two"}.get(args.get("org"), "Acme")
+        return {"orgId": args.get("org") if args.get("org") in ("o1", "o2") else "o9", "orgName": org, "project": "shop",
+                "projectKey": "git:github.com/acme/shop", "rules": [dict(RULE)], "removed": []}
 
     monkeypatch.setattr(M, "_team", fake)
     return state, calls
 
 
-def rule_writes(calls):
-    return [c for c in calls if c[0] in ("rules-set", "rules-remove")]
+def only_reads(calls):
+    return all(c[0] == "rules-get" for c in calls)
 
 
-def test_rule_tools_are_listed_and_say_the_user_must_confirm():
+def test_rule_tools_are_listed_and_say_they_write_nothing():
     tools = {t.name: t for t in run(M.server.list_tools())}
     assert {"project_rules", "project_rule_set", "project_rule_remove"} <= set(tools)
     for n in ("project_rule_set", "project_rule_remove"):
         assert "ctx" not in tools[n].input_schema.get("properties", {})
-        assert "dialog" in tools[n].description and "never say the user agreed" in " ".join(tools[n].description.split())
+        desc = " ".join(tools[n].description.split()).lower()
+        assert "writes nothing" in desc and "never say the user agreed" in desc
     assert "Read-only" in tools["project_rules"].description
 
 
-def test_instructions_say_rules_change_only_through_the_tools_with_the_users_yes():
-    text = M.server.instructions
-    assert "project_rule_set" in text and "project_rule_remove" in text
-    assert "never claim the user agreed" in text and "before writing any code" in text
+def test_instructions_say_the_user_types_the_line_and_the_model_never_changes_rules():
+    text = " ".join(M.server.instructions.split())
+    assert "project_rule_set" in text and "project_rule_remove" in text and "/spookling-rules" in text
+    assert "never changed by you" in text and "never say the user agreed" in text and "before writing any code" in text
 
 
 def test_project_rules_lists_the_rules_read_only(rules_team):
@@ -768,138 +763,126 @@ def test_project_rules_lists_the_rules_read_only(rules_team):
     out = run(M.project_rules())
     assert out["org"] == "Acme" and out["project"] == "shop"
     assert out["rules"][0]["n"] == 1 and out["rules"][0]["id"] == "r_1" and out["rules"][0]["setBy"] == "Ada"
-    assert rule_writes(calls) == [] and calls[0][1]["cwd"] == os.getcwd()
+    assert only_reads(calls) and calls[0][1]["cwd"] == os.getcwd()
 
 
-def test_rule_set_asks_naming_project_org_and_text_then_writes_on_yes(rules_team, monkeypatch):
+def test_rule_set_returns_the_chat_line_and_the_terminal_command_and_writes_nothing(rules_team):
     _, calls = rules_team
-    monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-9")
-    ctx = Ctx(Res("accept", True))
+    ctx = Ctx(Res("accept", True))  # even a yes in a dialog is not asked for: there is no dialog here
     out = run(T.project_rule_set("Write  tests\nfor every bug fix.", "", "", ctx))
-    assert out["ok"] is True and "Rule set" in out["message"]
-    msg = ctx.asked[0]
-    assert "'shop'" in msg and "'Acme'" in msg and "Write tests for every bug fix." in msg
-    assert rule_writes(calls) == [("rules-set", {"orgId": "o9", "projectKey": "git:github.com/acme/shop",
-                                                 "text": "Write tests for every bug fix.", "sessionId": "sess-9"})]
+    assert ctx.asked == []
+    assert out["ok"] is False and out["needsUserConfirmation"] is True
+    assert out["slashCommand"] == "/spookling-rules Write tests for every bug fix."
+    assert out["command"] == "spookling rules set 'Write tests for every bug fix.' --org Acme"
+    assert (out["org"], out["project"]) == ("Acme", "shop") and "Nothing was set" in out["message"]
+    assert "never saves a project rule from the chat" in out["message"] and "Do not run either yourself" in out["message"]
+    assert only_reads(calls)
 
 
-def test_rule_replace_shows_old_and_new_and_sends_the_version_shown(rules_team):
+def test_rule_set_with_an_org_named_carries_it_into_the_chat_line(rules_team):
+    out = run(T.project_rule_set("Use tabs.", "", "acme", Ctx(boom=True)))
+    assert out["slashCommand"] == "/spookling-rules --org Acme Use tabs."
+    assert out["command"] == "spookling rules set 'Use tabs.' --org Acme"
+
+
+def test_rule_replace_returns_the_replace_line_with_the_id(rules_team):
     _, calls = rules_team
-    ctx = Ctx(Res("accept", True))
-    run(T.project_rule_set("Use MVI for all UI code.", "r_1", "", ctx))
-    assert "Old: Use MVVM for all UI code." in ctx.asked[0] and "New: Use MVI for all UI code." in ctx.asked[0]
-    assert rule_writes(calls)[0][1]["replaces"] == "r_1" and rule_writes(calls)[0][1]["expectedVersion"] == 2
+    out = run(T.project_rule_set("Use MVI for all UI code.", "r_1", "acme", None))
+    assert out["slashCommand"] == "/spookling-rules --org Acme replace r_1 Use MVI for all UI code."
+    assert out["command"] == "spookling rules set 'Use MVI for all UI code.' --replace r_1 --org Acme"
+    assert out["message"].startswith("Nothing was changed.")
+    assert only_reads(calls)
 
 
-@pytest.mark.parametrize("answer", [Res("decline"), Res("cancel"), Res("accept", False), Res("accept")])
-def test_rule_set_and_remove_write_nothing_without_a_clear_yes(rules_team, answer):
+def test_rule_remove_returns_the_remove_line_and_writes_nothing(rules_team):
     _, calls = rules_team
-    assert run(T.project_rule_set("Use tabs.", "", "", Ctx(answer)))["ok"] is False
-    assert run(T.project_rule_remove("r_1", "", Ctx(answer)))["ok"] is False
-    assert rule_writes(calls) == []
+    out = run(T.project_rule_remove("r_1", "", Ctx(Res("accept", True))))
+    assert out["slashCommand"] == "/spookling-rules remove r_1" and out["command"] == "spookling rules remove r_1 --org Acme"
+    assert "Nothing was removed" in out["message"] and only_reads(calls)
 
 
-def test_no_dialog_hands_over_the_exact_cli_command_and_writes_nothing(rules_team):
-    _, calls = rules_team
-    for ctx in (Ctx(boom=True), None):
-        out = run(T.project_rule_set("Don't use tabs.", "", "", ctx))
-        assert out["ok"] is False and out["needsUserConfirmation"] is True
-        assert out["command"] == "spookling rules set 'Don'\"'\"'t use tabs.' --org Acme"
-        assert (out["org"], out["project"], out["text"]) == ("Acme", "shop", "Don't use tabs.")
-        assert "--yes" not in out["command"] and "exactly as written" in out["message"] and os.getcwd() in out["message"]
-        rep = run(T.project_rule_set("Use MVI.", "r_1", "", ctx))
-        assert rep["command"] == "spookling rules set 'Use MVI.' --replace r_1 --org Acme" and rep["oldText"] == RULE["text"]
-        rm = run(T.project_rule_remove("r_1", "", ctx))
-        assert rm["command"] == "spookling rules remove r_1 --org Acme" and "Nothing was removed" in rm["message"]
-    assert rule_writes(calls) == []
+def test_the_chat_line_names_the_org_by_id_when_the_name_has_spaces():
+    assert M._slash_org({"orgName": "Acme Labs", "orgId": "o9"}) == "o9"
+    assert M._slash_org({"orgName": "Acme", "orgId": "o9"}) == "Acme"
 
 
-def test_several_orgs_pick_in_a_dialog_and_write_only_to_the_pick(rules_team):
+def test_several_orgs_with_no_picker_is_a_plain_refusal_that_lists_them(rules_team):
+    state, calls = rules_team
+    state["several"] = True
+    out = run(T.project_rule_set("Use tabs.", "", "", None))
+    assert out["ok"] is False and out["orgs"] == ["One", "Two"] and "command" not in out and "slashCommand" not in out
+    assert "'One', 'Two'" in out["error"] and "Do not guess the org" in out["message"]
+    assert only_reads(calls)
+
+
+def test_several_orgs_pick_in_a_dialog_then_the_line_is_for_that_org(rules_team):
     state, calls = rules_team
     state["several"] = True
 
     class Pick(Ctx):
         async def elicit(self, message, schema):
             self.asked.append(message)
-            if len(self.asked) == 1:
-                return type("R", (), {"action": "accept", "data": type("D", (), {"org": "Two"})()})()
-            return Res("accept", True)
+            return type("R", (), {"action": "accept", "data": type("D", (), {"org": "Two"})()})()
 
     ctx = Pick()
-    run(T.project_rule_set("Use tabs.", "", "", ctx))
-    assert "Which one" in ctx.asked[0] and "'Two'" in ctx.asked[1]
-    assert rule_writes(calls)[0][1]["orgId"] == "o2"
+    out = run(T.project_rule_set("Use tabs.", "", "", ctx))
+    assert len(ctx.asked) == 1 and "Which one" in ctx.asked[0]
+    assert out["slashCommand"] == "/spookling-rules --org Two Use tabs." and out["org"] == "Two"
+    assert only_reads(calls)
 
 
-def test_several_orgs_without_a_dialog_hand_over_a_command_that_asks_which_org(rules_team):
+def test_server_errors_from_the_lookup_are_passed_on_in_plain_words(rules_team):
     state, calls = rules_team
-    state["several"] = True
+    state["error"] = "Not logged in. Run `spookling login`, then try again."
     out = run(T.project_rule_set("Use tabs.", "", "", None))
-    assert out["needsUserConfirmation"] is True and out["command"] == "spookling rules set 'Use tabs.'"
-    assert out["orgs"] == ["One", "Two"] and "asks which org" in out["message"]
-    assert rule_writes(calls) == []
+    assert out["ok"] is False and out["error"] == state["error"] and "Nothing was changed" in out["message"]
+    assert "command" not in out and only_reads(calls)
 
 
-def test_rule_changed_returns_the_current_text_and_says_ask_again(rules_team):
-    state, calls = rules_team
-    state["write"] = {"error": "changed", "reason": "rule_changed", "current": {**RULE, "text": "Use MVI.", "version": 3}}
-    for out in (run(T.project_rule_set("Use MVVM everywhere.", "r_1", "", Ctx(Res("accept", True)))),
-                run(T.project_rule_remove("r_1", "", Ctx(Res("accept", True))))):
-        assert out["ok"] is False and out["reason"] == "rule_changed" and out["current"]["text"] == "Use MVI."
-        assert "'Use MVI.'" in out["message"] and "ask them again" in out["message"]
-
-
-def test_rule_remove_asks_with_the_text_then_removes_with_the_version_shown(rules_team):
-    _, calls = rules_team
-    ctx = Ctx(Res("accept", True))
-    out = run(T.project_rule_remove("r_1", "", ctx))
-    assert out["ok"] is True and RULE["text"] in ctx.asked[0] and "'Acme'" in ctx.asked[0]
-    assert rule_writes(calls) == [("rules-remove", {"orgId": "o9", "projectKey": "git:github.com/acme/shop", "ruleId": "r_1", "expectedVersion": 2})]
-
-
-def test_unknown_rule_ids_and_bad_text_are_refused_without_asking(rules_team):
+def test_unknown_rule_ids_and_bad_text_are_refused(rules_team):
     _, calls = rules_team
     ctx = Ctx(Res("accept", True))
     assert "No rule" in run(T.project_rule_set("x", "r_nope", "", ctx))["error"]
     assert "No active rule" in run(T.project_rule_remove("r_nope", "", ctx))["error"]
     assert "1 to 300" in run(T.project_rule_set("x" * 301, "", "", ctx))["error"]
     assert "1 to 300" in run(T.project_rule_set("   ", "", "", ctx))["error"]
-    assert ctx.asked == [] and rule_writes(calls) == []
+    assert ctx.asked == [] and only_reads(calls)
 
 
-# ---- project rules over the real stdio harness, both protocols (the in-process tests above cover the lookups and the 409)
+def test_team_invoke_has_no_rule_write_entry():
+    """The MCP process has no write path: the node bridge refuses the old write names as unknown tools."""
+    node, script = M.shutil.which("node"), M._team_invoke_script()
+    if not node or script is None:
+        pytest.skip("node or the team bridge is not available")
+    import tempfile
+    with tempfile.TemporaryDirectory() as home:
+        for name in ("rules-set", "rules-remove"):
+            p = subprocess.run([node, str(script), name, "{}"], capture_output=True, text=True, timeout=60,
+                               env={**os.environ, "HOME": home, "USERPROFILE": home})
+            assert p.returncode == 1 and "Unknown team tool" in p.stdout, (name, p.stdout, p.stderr)
+        assert not os.path.exists(os.path.join(home, ".spookling"))
+
+
+# ---- project rules over the real stdio harness, both protocols: no dialog, the chat line comes back, nothing is written
 
 @pytest.mark.parametrize("protocol", PROTOCOLS)
-def test_rule_replace_shows_old_and_new_and_acts_only_on_yes(protocol):
-    args = {"text": "Use MVI.", "replaces_rule_id": "r_1", "org": "acme"}
-    asked, _, text, err, _ = stdio_call(protocol, FORM, reply(ACCEPT), "project_rule_set", args)
-    assert len(asked) == 1 and "Old: Use MVVM." in asked[0] and "New: Use MVI." in asked[0] and "'shop'" in asked[0] and "'Acme'" in asked[0]
-    out = json.loads(text)
-    assert not err and out["did"] == "rules-set" and out["args"]["replaces"] == "r_1" and out["args"]["expectedVersion"] == 3
-    for result in ({"action": "decline"}, {"action": "cancel"}, {"action": "accept", "content": {"confirm": False}}):
-        asked, _, text, err, _ = stdio_call(protocol, FORM, reply(result), "project_rule_set", args)
-        assert len(asked) == 1 and not err and '"did"' not in text and "Not set" in text
-    asked, _, text, err, _ = stdio_call(protocol, {}, reply(ACCEPT), "project_rule_set", args)
+def test_rule_set_over_stdio_asks_nothing_and_returns_the_chat_line(protocol):
+    asked, _, text, err, _ = stdio_call(protocol, FORM, reply(ACCEPT), "project_rule_set", {"text": "Use MVI.", "replaces_rule_id": "r_1", "org": "acme"})
     assert asked == [] and not err and '"did"' not in text
-    assert json.loads(text)["command"] == "spookling rules set 'Use MVI.' --replace r_1 --org Acme"
+    out = json.loads(text)
+    assert out["slashCommand"] == "/spookling-rules --org Acme replace r_1 Use MVI."
+    assert out["command"] == "spookling rules set 'Use MVI.' --replace r_1 --org Acme" and out["needsUserConfirmation"] is True
 
 
 @pytest.mark.parametrize("protocol", PROTOCOLS)
-def test_rule_set_and_remove_dialogs_say_project_org_and_rule_and_remove_says_not_removed(protocol):
-    asked, _, text, _, _ = stdio_call(protocol, FORM, reply(ACCEPT), "project_rule_set", {"text": "Use tabs.", "org": "acme"})
-    assert asked == ["Set a project rule (project 'shop', org 'Acme')?\n\nRule: Use tabs.\n\nEvery AI session on this project will be told to follow it."]
-    assert "Rule set for" in json.loads(text)["message"]
-    asked, _, text, _, _ = stdio_call(protocol, FORM, reply(ACCEPT), "project_rule_remove", {"rule_id": "r_1", "org": "acme"})
-    assert asked[0].startswith("Remove a project rule (project 'shop', org 'Acme')?\n\nRule: Use MVVM.")
-    assert json.loads(text)["args"]["expectedVersion"] == 3
-    asked, _, text, _, _ = stdio_call(protocol, FORM, reply({"action": "decline"}), "project_rule_remove", {"rule_id": "r_1"})
-    assert "Not removed" in text and '"did"' not in text
+def test_rule_remove_over_stdio_asks_nothing_and_returns_the_chat_line(protocol):
+    asked, _, text, err, _ = stdio_call(protocol, FORM, reply(ACCEPT), "project_rule_remove", {"rule_id": "r_1", "org": "acme"})
+    assert asked == [] and not err and '"did"' not in text
+    assert json.loads(text)["slashCommand"] == "/spookling-rules --org Acme remove r_1"
 
 
 @pytest.mark.parametrize("protocol", PROTOCOLS)
-def test_rule_tools_refuse_unknown_ids_and_bad_text_without_asking(protocol):
-    for tool, args, word in (("project_rule_set", {"text": "x", "replaces_rule_id": "r_nope"}, "No rule"),
-                             ("project_rule_remove", {"rule_id": "r_nope"}, "No active rule"),
-                             ("project_rule_set", {"text": "x" * 301}, "1 to 300")):
-        asked, _, text, err, _ = stdio_call(protocol, FORM, reply(ACCEPT), tool, args)
-        assert asked == [] and not err and word in text and '"did"' not in text
+def test_several_orgs_over_stdio_ask_for_the_org_only_and_never_confirm(protocol):
+    asked, _, text, err, _ = stdio_call(protocol, FORM, _pick_then_confirm("Beta"), "project_rule_set", {"text": "Use tabs."}, several=True)
+    assert len(asked) == 1 and "Which one" in asked[0] and not err and '"did"' not in text
+    assert json.loads(text)["slashCommand"] == "/spookling-rules --org Beta Use tabs."

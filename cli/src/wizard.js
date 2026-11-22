@@ -992,7 +992,7 @@ async function shareCommandFile(ctx) {
   await write(ctx, cp, text, { what: '/spookling-share command', redo: () => text });
 }
 
-// /spookling-rules: the file is ours or it is not written. Typing it is not a yes: the MCP dialog or the terminal still asks.
+// /spookling-rules: the file is ours or it is not written. Typing it is the user's yes (it runs `spookling rules slash`).
 async function rulesCommandFile(ctx) {
   const cp = commandsPath(ctx.project, ctx.scope, undefined, undefined, RULES_COMMAND_FILE), text = rulesCommand();
   const have = readText(cp);

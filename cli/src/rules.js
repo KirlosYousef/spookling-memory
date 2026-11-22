@@ -1,6 +1,6 @@
 // Project rules: team rules every AI tool follows on a project, kept in the Spookling cloud per org and project.
-// A rule is written only after a person said yes: a y/N at a real terminal here, or the MCP dialog (team-invoke.js rules-set
-// runs after the MCP tool's own confirmation). There is no --yes, and without a terminal `spookling rules set|remove` refuses.
+// A rule is written by a person only: `spookling rules set|remove` at a real terminal (y/N), or `/spookling-rules` typed in
+// Claude Code (typing it is the confirmation; `spookling rules slash` runs it). The MCP server only reads (team-invoke.js rules-get).
 import { homedir } from 'node:os';
 import { CloudError, clean } from './cloud.js';
 import { readCredentials } from './credentials.js';
@@ -95,6 +95,10 @@ export async function rulesGet({ org = '', cwd = process.cwd(), env = process.en
   }
 }
 
+// a 400 that names `via`: the server does not know "slash" yet (its change is pushed before every deploy). The caller retries with "cli".
+const viaRefused = (e, via) => via === 'slash' && e instanceof CloudError && e.status === 400
+  && /via/i.test(`${e.reason ?? ''} ${e.message ?? ''} ${JSON.stringify(e.details ?? '')}`);
+
 /** Write a rule. The caller has the user's yes already. replaces + expectedVersion write a new version of that rule. */
 export async function rulesSet({ orgId, projectKey, text, replaces = '', expectedVersion, via = 'cli', sessionId, env = process.env, home = homedir(), cloud: injected } = {}) {
   const t = normalizeRule(text);
@@ -106,7 +110,7 @@ export async function rulesSet({ orgId, projectKey, text, replaces = '', expecte
   try {
     const data = await cloud.setRule({ orgId, projectKey, text: t, ...(replaces ? { replaces, expectedVersion } : {}), via, ...(sessionId ? { sessionId } : {}) });
     return { ok: true, action: replaces ? 'replaced' : 'set', rule: ruleView(data?.rule), previous: ruleView(data?.previous) };
-  } catch (e) { return ruleError(e, { env, home }); }
+  } catch (e) { return viaRefused(e, via) ? { error: 'The server does not take that yet.', reason: 'via_refused' } : ruleError(e, { env, home }); }
 }
 
 /** Remove a rule (a new version; its history stays). The caller has the user's yes already. */
@@ -118,7 +122,7 @@ export async function rulesRemove({ orgId, projectKey, ruleId, expectedVersion, 
   try {
     const data = await cloud.removeRule({ orgId, projectKey, ruleId, expectedVersion, via, ...(sessionId ? { sessionId } : {}) });
     return { ok: true, action: 'removed', rule: ruleView(data?.rule) };
-  } catch (e) { return ruleError(e, { env, home, action: 'remove' }); }
+  } catch (e) { return viaRefused(e, via) ? { error: 'The server does not take that yet.', reason: 'via_refused' } : ruleError(e, { env, home, action: 'remove' }); }
 }
 
 export async function rulesHistory({ orgId, projectKey, ruleId, env = process.env, home = homedir(), cloud: injected } = {}) {
@@ -247,9 +251,84 @@ export async function rulesCommand({
   return 0;
 }
 
-// for team-invoke.js: the MCP server asked the user already, so these write without a prompt (via "mcp")
+// for team-invoke.js: the MCP server reads the rules (to show the user what a change would do); it never writes
 export const invoke = {
   get: (a = {}) => rulesGet({ org: a.org || '', cwd: a.cwd || process.cwd() }),
-  set: (a = {}) => rulesSet({ orgId: a.orgId, projectKey: a.projectKey, text: a.text, replaces: a.replaces || '', expectedVersion: a.expectedVersion, via: 'mcp', sessionId: a.sessionId }),
-  remove: (a = {}) => rulesRemove({ orgId: a.orgId, projectKey: a.projectKey, ruleId: a.ruleId, expectedVersion: a.expectedVersion, via: 'mcp', sessionId: a.sessionId }),
 };
+
+// ---- /spookling-rules (`spookling rules slash`): the command file pipes what the user typed here on stdin.
+// Typing the command is the confirmation, so there is no y/N. Forms: the text alone adds a rule; `replace <id>` then the new text
+// (same line or the lines after) changes one; `remove <id>` removes one; nothing lists. `--org <id or name>` may lead the first line.
+
+/** What the typed text means: { mode: 'list'|'add'|'replace'|'remove', org, id, text } or { error } for an unusable form. */
+export function parseSlash(input) {
+  let s = String(input ?? '').replace(/\r\n?/g, '\n').trim();
+  let org = '';
+  const o = /^--org[ \t]+(\S+)/.exec(s);
+  if (o) { org = o[1]; s = s.slice(o[0].length).trim(); }
+  if (!s) return { mode: 'list', org };
+  const r = /^replace[ \t]+(\S+)(?:[ \t]+|\n)?([\s\S]*)$/.exec(s);
+  if (r) {
+    const text = normalizeRule(r[2]);
+    return text ? { mode: 'replace', org, id: r[1], text } : { error: `Give the new text after the rule id: /spookling-rules replace ${r[1]} <new text>. Nothing changed.` };
+  }
+  const m = /^remove[ \t]+(\S+)[ \t]*$/.exec(s);
+  if (m) return { mode: 'remove', org, id: m[1] };
+  const text = normalizeRule(s);
+  if (!text) return { mode: 'list', org };
+  if (text.length > RULE_MAX) return { error: `A rule must be at most ${RULE_MAX} characters (this one has ${text.length}). Nothing changed.` };
+  return { mode: 'add', org, text };
+}
+
+const slashList = (g) => {
+  if (!g.rules.length) return `No project rules for ${g.project} in ${g.orgName} yet. Add one: /spookling-rules <the rule>`;
+  const rows = g.rules.map((r, i) => `  ${i + 1}. ${r.text}\n     ${r.id} · set by ${r.createdBy} ${when(r.createdAt)}${r.version > 1 ? `; v${r.version}, changed by ${r.updatedBy} ${when(r.updatedAt)}` : ''}`);
+  return `Project rules for ${g.project} in ${g.orgName}${g.onlyOrg ? ' (your only org)' : ''}:\n${rows.join('\n')}`;
+};
+
+/**
+ * Runs the typed command. Returns { code, text } for the chat; never prompts. cloud is injectable for tests.
+ */
+export async function rulesSlash({ input = '', org: orgFlag = '', cwd = process.cwd(), env = process.env, home = homedir(), cloud } = {}) {
+  if (!cloud && !readCredentials({ env, home }).token) return { code: 1, text: NOT_LOGGED_IN };
+  const p = parseSlash(input);
+  if (p.error) return { code: 1, text: p.error };
+  const org = orgFlag || p.org || '';
+  const g = await rulesGet({ org, cwd, env, home, cloud });
+  if (g.needOrg && g.orgs?.length > 1 && !org) {
+    const names = g.orgs.map((o) => o.name).join(', ');
+    return { code: 1, text: `You are in several orgs (${names}), so this needs one. Nothing changed. Retry with --org <name>, for example: /spookling-rules --org ${g.orgs[0].name} <your text>` };
+  }
+  if (g.error) return { code: 1, text: g.error };
+  const note = g.note ? `${g.note}\n` : '';
+  if (p.mode === 'list') return { code: 0, text: `${note}${slashList(g)}` };
+
+  const where = `project ${g.project} · org ${g.orgName}`;
+  let old = null;
+  if (p.mode === 'replace' || p.mode === 'remove') {
+    old = [...g.rules, ...g.removed].find((r) => r.id === p.id);
+    if (!old) return { code: 1, text: `No rule ${line(p.id, 80)} in ${where}. Nothing changed. /spookling-rules (no text) lists the ids.` };
+    if (p.mode === 'remove' && old.status === 'removed') return { code: 1, text: `That rule is already removed. Nothing changed.` };
+  }
+  const sessionId = sessionOf(env);
+  const write = (via) => {
+    const base = { orgId: g.orgId, projectKey: g.projectKey, via, sessionId, env, home, cloud };
+    if (p.mode === 'remove') return rulesRemove({ ...base, ruleId: old.id, expectedVersion: old.version });
+    return rulesSet({ ...base, text: p.text ?? old.text, ...(old ? { replaces: old.id, expectedVersion: old.version } : {}) });
+  };
+  let out = await write('slash');
+  let fallback = '';
+  if (out.reason === 'via_refused') {
+    out = await write('cli');
+    fallback = 'The server does not take via "slash" yet, so this was saved as a terminal change (via cli).\n';
+  }
+  if (out.error) {
+    const hint = out.reason === 'rule_changed' ? ' Type /spookling-rules to see the rules as they are now.' : '';
+    return { code: 1, text: `${out.error}${hint}` };
+  }
+  const r = out.rule || {};
+  const quoted = `"${p.text ?? old?.text ?? r.text ?? ''}"`;
+  if (p.mode === 'add') return { code: 0, text: `${fallback}Rule set (version ${r.version}): ${quoted} · ${where}. New AI sessions on this project start with it.` };
+  if (p.mode === 'replace') return { code: 0, text: `${fallback}Rule ${r.id || old.id} replaced (now version ${r.version}): ${quoted} · ${where}. New AI sessions on this project start with the new text.` };
+  return { code: 0, text: `${fallback}Rule ${r.id || old.id} removed: ${quoted} · ${where}. Its history stays: spookling rules history ${r.id || old.id}` };
+}

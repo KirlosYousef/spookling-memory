@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { envelope, listen, readReq, tmpHome } from './helpers.mjs';
 import { setDefaultOrg, writeCredentials } from '../src/credentials.js';
 import { main } from '../src/main.js';
@@ -15,7 +16,7 @@ const RULE = (id, text, version = 1, extra = {}) => ({
 
 // A fake API with project rules. state.fail = { status, code, reason, rule } makes the next write fail that way.
 async function fakeApi({ orgs = [ORG('o1', 'Acme')], rules = [RULE('r_1', 'Use MVVM for all UI code.')], removed = [] } = {}) {
-  const state = { orgs, rules, removed, fail: null, seen: [] };
+  const state = { orgs, rules, removed, fail: null, failVia: false, seen: [] };
   const srv = await listen(async (req, res) => {
     const body = req.method === 'POST' ? await readReq(req) : null;
     const url = decodeURIComponent(req.url);
@@ -33,6 +34,7 @@ async function fakeApi({ orgs = [ORG('o1', 'Acme')], rules = [RULE('r_1', 'Use M
         { version: 1, text: 'Use MVVM.', action: 'set', revertedFrom: null, by: { name: 'Ada' }, via: 'cli', at: '2026-11-18T09:00:00.000Z' },
       ] } });
     }
+    if (state.failVia && body?.via === 'slash') return envelope(res, 400, { success: false, error: { code: 'INVALID_VIA', details: {} } });
     if (state.fail) {
       const f = state.fail;
       return envelope(res, f.status, { success: false, error: { code: f.code, details: { reason: f.reason, ...(f.rule && { rule: f.rule }) } } });
@@ -312,30 +314,248 @@ test('help lists the rules commands; the internal MCP entry points are not in it
   assert.ok(!/rules-set|rules-get|rules-remove|--yes.*rules/.test(out));
 });
 
-test('the MCP entry points (team-invoke rules-*) write with via mcp and pass the session id', async () => {
+test('the MCP side only reads: team-invoke has rules-get and no write entry, and invoke has only get', async () => {
   const api = await fakeApi({ rules: [RULE('r_1', 'Use MVVM for all UI code.', 2)] });
   try {
     const t = setup(api);
-    const { rulesGet, rulesSet, rulesRemove } = await import('../src/rules.js');
+    const { rulesGet, invoke: inv } = await import('../src/rules.js');
     const g = await rulesGet({ cwd: t.cwd, home: t.home, env: {} });
     assert.equal(g.orgId, 'o1');
     assert.equal(g.projectKey, t.key);
     assert.equal(g.rules[0].id, 'r_1');
-    const s = await rulesSet({ orgId: 'o1', projectKey: t.key, text: 'New rule.', via: 'mcp', sessionId: 's1', home: t.home, env: {} });
-    assert.equal(s.ok, true);
-    const rm = await rulesRemove({ orgId: 'o1', projectKey: t.key, ruleId: 'r_1', expectedVersion: 2, via: 'mcp', home: t.home, env: {} });
-    assert.equal(rm.ok, true);
-    const w = writes(api);
-    assert.deepEqual(w[0].body, { text: 'New rule.', via: 'mcp', sessionId: 's1' });
-    assert.deepEqual(w[1].body, { expectedVersion: 2, via: 'mcp' });
-    api.state.fail = { status: 409, code: 'CONFLICT', reason: 'rule_changed', rule: RULE('r_1', 'Changed.', 3) };
-    const c = await rulesRemove({ orgId: 'o1', projectKey: t.key, ruleId: 'r_1', expectedVersion: 2, home: t.home, env: {} });
-    assert.equal(c.reason, 'rule_changed');
-    assert.equal(c.current.text, 'Changed.');
-    assert.deepEqual(Object.keys(invoke), ['get', 'set', 'remove']);
+    assert.deepEqual(Object.keys(inv), ['get']);
+    assert.deepEqual(writes(api), []);
+    const script = fileURLToPath(new URL('../src/team-invoke.js', import.meta.url));
+    const cp = await import('node:child_process');
+    for (const name of ['rules-set', 'rules-remove']) {
+      const r = cp.spawnSync(process.execPath, [script, name, '{}'], { encoding: 'utf8', env: { ...process.env, HOME: t.home, USERPROFILE: t.home } });
+      assert.equal(r.status, 1, name);
+      assert.match(r.stdout, /Unknown team tool/, name);
+    }
+    assert.deepEqual(writes(api), []);
   } finally { await api.close(); }
 });
 
 test('normalizeRule collapses whitespace like the API', () => {
   assert.equal(normalizeRule('  a\n\n b\t c  '), 'a b c');
+});
+
+// ---- /spookling-rules: `spookling rules slash` (the typed text on stdin). Typing the command is the yes: nothing asks.
+
+// the answer is collected through the injected write, never by swapping stdout (the test runner writes to stdout too)
+async function slash(t, input, deps = {}) {
+  let out = '';
+  const code = await main(['node', 'spookling', 'rules', 'slash', ...(deps.flags ?? [])], { home: t.home, cwd: t.cwd, env: {}, tty: false, exit: () => {}, readStdin: async () => input, write: (s) => { out += s; }, ...deps });
+  return { code, out };
+}
+const lastWrite = (api) => writes(api).at(-1);
+
+test('parseSlash: the forms the command takes, and what each one means', async () => {
+  const { parseSlash } = await import('../src/rules.js');
+  assert.deepEqual(parseSlash(''), { mode: 'list', org: '' });
+  assert.deepEqual(parseSlash('  \n'), { mode: 'list', org: '' });
+  assert.deepEqual(parseSlash('--org Acme'), { mode: 'list', org: 'Acme' });
+  assert.deepEqual(parseSlash('--org Acme Use tabs.'), { mode: 'add', org: 'Acme', text: 'Use tabs.' });
+  assert.deepEqual(parseSlash('--org o1\nUse  tabs\n\nevery time.'), { mode: 'add', org: 'o1', text: 'Use tabs every time.' });
+  assert.deepEqual(parseSlash('remove r_1'), { mode: 'remove', org: '', id: 'r_1' });
+  assert.deepEqual(parseSlash('replace r_1 Use MVI.'), { mode: 'replace', org: '', id: 'r_1', text: 'Use MVI.' });
+  assert.deepEqual(parseSlash('replace r_1\nUse MVI\nfor all UI.'), { mode: 'replace', org: '', id: 'r_1', text: 'Use MVI for all UI.' });
+  // "remove" with more words is a new rule, not a removal
+  assert.deepEqual(parseSlash('Remove the console logs.'), { mode: 'add', org: '', text: 'Remove the console logs.' });
+  assert.match(parseSlash('replace r_1').error, /Give the new text/);
+  assert.match(parseSlash('x'.repeat(301)).error, /at most 300 characters \(this one has 301\)/);
+});
+
+test('add: the text arrives as typed, is sent with via slash, and the answer is one plain line', async () => {
+  const api = await fakeApi();
+  try {
+    const t = setup(api);
+    const r = await slash(t, 'Always use tabs.\n');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, new RegExp(`^Rule set \\(version 1\\): "Always use tabs\\." · project ${basename(t.cwd)} · org Acme\\. New AI sessions on this project start with it\\.\\n$`));
+    assert.deepEqual(lastWrite(api).body, { text: 'Always use tabs.', via: 'slash' });
+    assert.equal(lastWrite(api).url, `/memory/orgs/o1/projects/${t.key}/rules`);
+  } finally { await api.close(); }
+});
+
+test('replace: sends the id, the version shown and via slash; the new text on the next line or the same one', async () => {
+  const api = await fakeApi({ rules: [RULE('r_1', 'Use MVVM for all UI code.', 2)] });
+  try {
+    const t = setup(api);
+    const a = await slash(t, 'replace r_1\nUse MVI for all UI code.\n');
+    assert.equal(a.code, 0, a.out);
+    assert.match(a.out, /^Rule r_1 replaced \(now version 3\): "Use MVI for all UI code\."/);
+    assert.deepEqual(lastWrite(api).body, { text: 'Use MVI for all UI code.', via: 'slash', replaces: 'r_1', expectedVersion: 2 });
+    const b = await slash(t, 'replace r_1 Use MVI.');
+    assert.equal(b.code, 0, b.out);
+    assert.equal(lastWrite(api).body.text, 'Use MVI.');
+  } finally { await api.close(); }
+});
+
+test('remove: posts the version shown with via slash, and says the history stays', async () => {
+  const api = await fakeApi({ rules: [RULE('r_1', 'Use MVVM for all UI code.', 2)] });
+  try {
+    const t = setup(api);
+    const r = await slash(t, 'remove r_1');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /^Rule r_1 removed: "Use MVVM for all UI code\." · project .* · org Acme\. Its history stays: spookling rules history r_1/m);
+    assert.equal(lastWrite(api).url, `/memory/orgs/o1/projects/${t.key}/rules/r_1/remove`);
+    assert.deepEqual(lastWrite(api).body, { expectedVersion: 2, via: 'slash' });
+  } finally { await api.close(); }
+});
+
+test('an unknown id, a removed rule, and a replace without text change nothing', async () => {
+  const api = await fakeApi({ rules: [RULE('r_1', 'Use MVVM.', 2)], removed: [RULE('r_9', 'Old rule.', 1, { status: 'removed' })] });
+  try {
+    const t = setup(api);
+    const a = await slash(t, 'remove r_nope');
+    assert.equal(a.code, 1); assert.match(a.out, /No rule r_nope in .* Nothing changed\./);
+    const b = await slash(t, 'remove r_9');
+    assert.equal(b.code, 1); assert.match(b.out, /already removed/);
+    const c = await slash(t, 'replace r_nope new text');
+    assert.equal(c.code, 1); assert.match(c.out, /No rule r_nope/);
+    assert.deepEqual(writes(api), []);
+  } finally { await api.close(); }
+});
+
+test('empty input lists the rules and writes nothing', async () => {
+  const api = await fakeApi({ rules: [RULE('r_1', 'Use MVVM for all UI code.'), RULE('r_2', 'No new dependencies.', 1)] });
+  try {
+    const t = setup(api);
+    const r = await slash(t, '\n');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /Project rules for .* in Acme \(your only org\):\n  1\. Use MVVM for all UI code\.\n     r_1 · set by Ada/);
+    assert.match(r.out, /2\. No new dependencies\./);
+    assert.deepEqual(writes(api), []);
+  } finally { await api.close(); }
+});
+
+test('several orgs and no default: nothing is written, the orgs are named, and the retry hint is --org <name>', async () => {
+  const api = await fakeApi({ orgs: [ORG('o1', 'Acme'), ORG('o2', 'Beta')] });
+  try {
+    const t = setup(api);
+    const r = await slash(t, 'Use tabs.');
+    assert.equal(r.code, 1);
+    assert.match(r.out, /several orgs \(Acme, Beta\)/);
+    assert.match(r.out, /--org <name>/);
+    assert.deepEqual(writes(api), []);
+    const ok = await slash(t, '--org Beta Use tabs.');
+    assert.equal(ok.code, 0, ok.out);
+    assert.equal(lastWrite(api).url, `/memory/orgs/o2/projects/${t.key}/rules`);
+  } finally { await api.close(); }
+});
+
+test('the --org flag works as well as the first line', async () => {
+  const api = await fakeApi({ orgs: [ORG('o1', 'Acme'), ORG('o2', 'Beta')] });
+  try {
+    const t = setup(api);
+    const r = await slash(t, 'Use tabs.', { flags: ['--org', 'Beta'] });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(lastWrite(api).url, `/memory/orgs/o2/projects/${t.key}/rules`);
+  } finally { await api.close(); }
+});
+
+test('each refusal from the server is one plain line with its reason, and nothing else', async () => {
+  const cases = [
+    [{ status: 409, code: 'CONFLICT', reason: 'rule_changed', rule: RULE('r_1', 'Use MVI.', 3) }, /Someone changed this rule since it was shown\. It now says: "Use MVI\." \(version 3, active\)/],
+    [{ status: 409, code: 'CONFLICT', reason: 'rule_exists' }, /already exists in this project/],
+    [{ status: 409, code: 'CONFLICT', reason: 'rule_unchanged' }, /already removed/],
+    [{ status: 409, code: 'CONFLICT', reason: 'rule_limit' }, /20 active rules/],
+    [{ status: 400, code: 'BAD', reason: 'rule_text' }, /1 to 300 characters/],
+    [{ status: 404, code: 'NOT_FOUND' }, /No rule with that id/],
+    [{ status: 403, code: 'FORBIDDEN', reason: 'web_only' }, /Only the Spookling web app/],
+    [{ status: 403, code: 'FORBIDDEN' }, /not an active member of that org/],
+  ];
+  const { rulesSlash } = await import('../src/rules.js');
+  for (const [fail, want] of cases) {
+    const api = await fakeApi({ rules: [RULE('r_1', 'Use MVVM.', 2)] });
+    try {
+      const t = setup(api);
+      api.state.fail = fail;
+      const r = await rulesSlash({ input: 'remove r_1', cwd: t.cwd, home: t.home, env: {} });
+      assert.equal(r.code, 1, fail.code);
+      assert.match(r.text, want, fail.code);
+      assert.doesNotMatch(r.text, /undefined|\[object|\n/, fail.code);
+    } finally { await api.close(); }
+  }
+});
+
+test('not logged in: the standard message, and no request', async () => {
+  const api = await fakeApi();
+  try {
+    const t = setup(api, { login: false });
+    const r = await slash(t, 'Use tabs.');
+    assert.equal(r.code, 1);
+    assert.match(r.out, /Not logged in\. Run `spookling login`, then try again\./);
+    assert.deepEqual(api.state.seen, []);
+  } finally { await api.close(); }
+});
+
+test('the home folder is not a project: a plain message and nothing written', async () => {
+  const api = await fakeApi();
+  try {
+    const t = setup(api);
+    const r = await slash(t, 'Use tabs.', { cwd: t.home });
+    assert.equal(r.code, 1);
+    assert.match(r.out, /not part of a project/);
+    assert.deepEqual(writes(api), []);
+  } finally { await api.close(); }
+});
+
+test('a server that does not take via "slash" yet: retried once with via cli, and the output says so', async () => {
+  const api = await fakeApi();
+  try {
+    const t = setup(api);
+    api.state.failVia = true;
+    const r = await slash(t, 'Use tabs.');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /^The server does not take via "slash" yet, so this was saved as a terminal change \(via cli\)\./);
+    assert.match(r.out, /Rule set \(version 1\): "Use tabs\."/);
+    assert.deepEqual(writes(api).map((w) => w.body.via), ['slash', 'cli']);
+  } finally { await api.close(); }
+});
+
+test('a 400 that is not about via is not retried', async () => {
+  const api = await fakeApi();
+  try {
+    const t = setup(api);
+    api.state.fail = { status: 400, code: 'BAD', reason: 'rule_text' };
+    const r = await slash(t, 'Use tabs.');
+    assert.equal(r.code, 1);
+    assert.equal(writes(api).length, 1);
+  } finally { await api.close(); }
+});
+
+// The command file runs `spookling rules slash` in a fenced shell block with a quoted heredoc. Run that block through sh with a
+// stand-in `spookling` that echoes its stdin, and the text must come out byte for byte (then parse back to the same rule).
+test('the /spookling-rules shell block delivers quotes, apostrophes, substitutions, backticks, newlines and operators intact', { skip: process.platform === 'win32' }, async () => {
+  const { rulesCommand } = await import('../src/hooks.js');
+  const { parseSlash, normalizeRule } = await import('../src/rules.js');
+  const { spawnSync } = await import('node:child_process');
+  const { mkdirSync, writeFileSync, chmodSync } = await import('node:fs');
+  const block = /```!\n([\s\S]*?)\n```/.exec(rulesCommand());
+  assert.ok(block, 'the command has one fenced ! block');
+  const bin = tmpHome('spk-rules-bin-');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(`${bin}/spookling`, '#!/bin/sh\nif [ "$1" = rules ] && [ "$2" = slash ]; then cat; else echo "bad args: $*" >&2; exit 9; fi\n');
+  chmodSync(`${bin}/spookling`, 0o755);
+  const inputs = [
+    "Don't use 'quotes' or \"double\" quotes.",
+    'Write tests for $(whoami) and `date` and $HOME.',
+    'Use ; and | and && and * and < and > and # and !',
+    'Line one\nLine two\n\nLine four',
+    'Keep the "$ARGUMENTS" text literal.',
+    'end with a question?',
+  ];
+  for (const input of inputs) {
+    const script = block[1].split('$ARGUMENTS').join(input);
+    const r = spawnSync('/bin/sh', ['-c', script], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    assert.equal(r.status, 0, `${JSON.stringify(input)}: ${r.stderr}`);
+    assert.equal(r.stdout, `${input}\n`, JSON.stringify(input));
+    const parsed = parseSlash(r.stdout);
+    assert.equal(parsed.mode, 'add', JSON.stringify(input));
+    assert.equal(parsed.text, normalizeRule(input), JSON.stringify(input));
+  }
+  const empty = spawnSync('/bin/sh', ['-c', block[1].split('$ARGUMENTS').join('')], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(parseSlash(empty.stdout).mode, 'list');
 });

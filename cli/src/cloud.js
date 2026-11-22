@@ -236,7 +236,7 @@ export function createCloud({ env = process.env, fetchImpl = globalThis.fetch, t
     projectContext({ projectKey, token: t, timeoutMs } = {}) {
       return call(`/memory/context?${new URLSearchParams({ projectKey })}`, { method: 'GET', token: t || auth(), ...(timeoutMs ? { timeoutMs } : {}) });
     },
-    // project rules (written only after the user confirmed in a dialog or a terminal; the API does not know which)
+    // project rules (typed by the user: /spookling-rules in the chat, or spookling rules at a terminal; the API does not know which)
     getRules({ orgId, projectKey, token: t } = {}) {
       return call(`${rulesPath(orgId, projectKey)}`, { method: 'GET', token: t || auth() });
     },

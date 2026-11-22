@@ -18,7 +18,7 @@ import { flushQueued } from './push.js';
 import { deleteAllSessions, deleteSession, formatDelete } from './delete.js';
 import { currentSession, setProjectAutoShare, setSessionShare, shareStatus, webUrl } from './share.js';
 import { shareTarget } from './team.js';
-import { rulesCommand } from './rules.js';
+import { rulesCommand, rulesSlash } from './rules.js';
 
 const HELP = `Spookling Memory
 
@@ -198,6 +198,14 @@ async function sharing(cmd, args, { fns, home, org, cwd, env }, { ask, tty }) {
   return out.error ? 1 : 0;
 }
 
+// all of stdin, or '' at a terminal (nothing was piped, so there is nothing to wait for)
+async function readStdin() {
+  if (process.stdin.isTTY) return '';
+  let s = '';
+  for await (const chunk of process.stdin) s += chunk;
+  return s;
+}
+
 async function readLine(question) {
   const { createInterface } = await import('node:readline/promises');
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -281,6 +289,13 @@ async function route(args, deps) {
     case 'sessions': case 'share': case 'unshare': case 'autoshare': return sharing(cmd, args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'delete': return deleteCommand(args, ctx, { ask: deps.ask || readLine, tty: deps.tty ?? !!(process.stdin.isTTY && process.stdout.isTTY) });
     case 'rules': {
+      // the internal entry the /spookling-rules command file runs: the typed text arrives on stdin (see rules.js rulesSlash)
+      if (args[1] === 'slash') {
+        const input = deps.readStdin ? await deps.readStdin() : await readStdin();
+        const r = await rulesSlash({ input, org: org ?? '', cwd, env, home, cloud: deps.cloud });
+        (deps.write ?? ((s) => process.stdout.write(s)))(`${r.text}\n`);
+        return r.code;
+      }
       const replace = flag(args, 'replace', 'needs a rule id');
       const words = operands(args, ['org', 'replace']);
       const sub = ['set', 'remove', 'history', 'list'].includes(words[0]) ? words.shift() : words.length ? words.shift() || '?' : '';

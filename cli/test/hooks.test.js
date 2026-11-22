@@ -274,13 +274,15 @@ test('the /spookling-share command allows only spookling share and is recognised
   assert.equal(commandsPath('/p', 'user', { CLAUDE_CONFIG_DIR: '/c' }), path.join('/c', 'commands', 'spookling-share.md'));
 });
 
-test('the /spookling-rules command is ours, is not a yes, and allows only the read-only rules tool', () => {
+test('the /spookling-rules command runs the one spookling rules slash call (typing it is the yes), with no model invocation', () => {
   const t = rulesCommand();
-  assert.match(t, /^---\n[\s\S]*allowed-tools: mcp__spookling-memory__project_rules\n---/);
-  assert.doesNotMatch(t, /allowed-tools:.*(project_rule_set|project_rule_remove|Bash)/);
-  assert.doesNotMatch(t, /--yes/);
-  assert.match(t, /not the user's confirmation/);
-  assert.match(t, /project_rule_set/);
+  assert.match(t, /^---\n[\s\S]*\ndisable-model-invocation: true\n[\s\S]*\n---\n/);
+  assert.match(t, /^allowed-tools: Bash\(spookling rules slash:\*\)$/m);
+  assert.match(t, /^argument-hint: \[rule text \| replace <id> <new text> \| remove <id>\]$/m);
+  assert.doesNotMatch(t, /project_rule|mcp__|--yes|allowed-tools:.*(Write|Edit|Read)/);
+  // the fenced ! block: one heredoc with a quoted delimiter, the arguments inside it
+  assert.match(t, /\n```!\nspookling rules slash <<'SPOOKLING_RULE_END'\n\$ARGUMENTS\nSPOOKLING_RULE_END\n```\n/);
+  assert.match(t, /Never run `spookling rules slash` yourself/);
   assert.ok(isOurRulesCommand(t) && !isOurRulesCommand(shareCommand()) && !isOurShareCommand(t));
   assert.equal(commandsPath('/p', 'project', {}, '/h', RULES_COMMAND_FILE), path.join('/p', '.claude', 'commands', 'spookling-rules.md'));
 });
