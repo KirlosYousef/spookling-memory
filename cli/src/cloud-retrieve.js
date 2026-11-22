@@ -112,6 +112,17 @@ const RULES_BLOCK = /<project-rules[\s\S]*?<\/project-rules>\s*/g;
 const withoutRules = (o) => (o.items.some((i) => isRuleId(i?.id)) || o.context.includes('<project-rules')
   ? { ...o, context: o.context.replace(RULES_BLOCK, '').trim(), items: o.items.filter((i) => !isRuleId(i?.id)) } : o);
 
+const RULES_ONE = /<project-rules[\s\S]*?<\/project-rules>/;
+/** An answer that is not ok/empty (the memory engine was down) can still carry the project rules the API composed itself: keep only
+ * those (block and rule items, status as is), record their ids as shown, and never cache it. null when there is no block. */
+function rulesOnly(data, sessionId, home, now) {
+  const block = typeof data.context === 'string' ? RULES_ONE.exec(data.context)?.[0] : '';
+  const items = Array.isArray(data.items) ? data.items.filter((i) => isRuleId(i?.id)) : [];
+  if (!block || !items.length) return null;
+  if (sessionId) updateShown(home, sessionId, now(), (cur) => ({ ids: trimIds([...(cur.ids ?? []), ...ids(items)], SHOWN_IDS_MAX) }));
+  return { context: block, items, tier: null, status: String(data.status), spaces: [], rulesOnly: true, cached: false };
+}
+
 function cacheGet(home, key, now) {
   const hit = readJson(cachePath(home)).entries?.[key];
   return hit && Number.isFinite(hit.at) && now - hit.at >= 0 && now - hit.at < CACHE_TTL_MS ? hit.data : null;
@@ -184,7 +195,8 @@ export async function cloudRetrieve({
       const body = { mode, question, ...(id.projectKey && { projectKey: id.projectKey }), ...(id.repoUrl && { repoUrl: id.repoUrl }),
         ...(id.project && { project: id.project }), ...(sessionId && { sessionId }), ...(sent.length && { shownIds: sent }), clientTs: new Date(now()).toISOString() };
       const data = await client.retrieve({ body, timeoutMs: left });
-      if (!data || (data.status !== 'ok' && data.status !== 'empty')) return null;
+      if (data && data.status !== 'ok' && data.status !== 'empty') return rulesOnly(data, sessionId, home, now); // the API's own rules fallback
+      if (!data) return null;
       const out = { context: typeof data.context === 'string' ? data.context : '', items: Array.isArray(data.items) ? data.items : [],
         tier: data.tier ?? null, status: data.status, spaces: Array.isArray(data.spaces) ? data.spaces : [], ...(data.paused && { paused: true }), cached: false };
       cachePut(home, key, withoutRules(out), now());

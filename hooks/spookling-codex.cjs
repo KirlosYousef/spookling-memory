@@ -22,7 +22,14 @@ const done = () => {
   } catch { /* a partial copy has no uploader; Codex still continues */ }
   process.exit(0);
 };
-const emit = (value) => process.stdout.write(JSON.stringify(value), done);
+let rulesBlock = ''; // the cloud's project rules when its memory answer was unavailable: they go first, before any local recall
+const emit = (value) => {
+  if (rulesBlock && p && p.hook_event_name === 'UserPromptSubmit') {
+    const h = value.hookSpecificOutput || { hookEventName: 'UserPromptSubmit' };
+    value = { ...value, hookSpecificOutput: { ...h, additionalContext: [rulesBlock, h.additionalContext].filter(Boolean).join('\n') } };
+  }
+  process.stdout.write(JSON.stringify(value), done);
+};
 let visible = false;
 // What Codex shows: its hook messages render ANSI colour and keep every line, so the ghost is drawn under a first line
 // of words (Codex puts "↳ Hook · " before that one). Only the server's own answers fill it.
@@ -34,7 +41,7 @@ const said = (state, title, details) => {
   return details ? [head, ...ghost.card(state, details.map((t) => [[t, GREY]]))].join('\n') : head;
 };
 let cloudOn = false; // cloud mode: no local server is no error, there is just nothing to say
-const unavailable = () => visible && !cloudOn
+const unavailable = () => visible && cloudOn && rulesBlock ? emit({}) : visible && !cloudOn
   ? emit({ systemMessage: said('degraded', 'memory unavailable', ['the local server did not answer', 'check it with: spookling-memory status']) })
   : done();
 process.stdin.on('data', (c) => chunks.push(c));
@@ -58,7 +65,8 @@ process.stdin.on('end', async () => {
     }
     if (cloudOn && !start) {
       const r = await cloud.retrieve(p);
-      if (r) {
+      if (r && r.rulesOnly) rulesBlock = r.context;
+      else if (r) {
         const n = r.items.length;
         const note = n ? said('active', `${n} ${n === 1 ? 'item' : 'items'} recalled from your cloud memory`) : said('active', 'recall ran: nothing on record for this prompt');
         return emit({ ...(r.context && { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: r.context } }), systemMessage: note });

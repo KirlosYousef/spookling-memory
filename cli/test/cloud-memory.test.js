@@ -503,6 +503,50 @@ test('Codex hook in cloud mode: prompt from the cloud, brief at SessionStart, lo
   } finally { await api.close(); await local.close(); }
 });
 
+const RULE_ITEM = { id: 'rule:r_1@1', spaceId: 'rules/o/p', sid: '', seq: 0 };
+const UNAVAIL_RULES = () => ok({ status: 'unavailable', context: RULES, items: [RULE_ITEM] });
+
+test('cloudRetrieve: an unavailable answer still gives its rules block, records the ids, and is never cached', async () => {
+  let reply = UNAVAIL_RULES();
+  const api = await fakeApi(() => reply);
+  try {
+    const home = cloudHome({ api: api.url }), cwd = workdir();
+    const r = await cloudRetrieve({ question: QUESTION, cwd, sessionId: 'a', home, env: {} });
+    assert.equal(r.context, RULES);
+    assert.deepEqual(r.items, [RULE_ITEM]);
+    assert.equal(r.status, 'unavailable');
+    assert.deepEqual(shownIds(home, 'a'), ['rule:r_1@1']);
+    assert.ok(!existsSync(join(home, '.spookling', 'cloud-cache.json')), 'not cached');
+    await cloudRetrieve({ question: QUESTION, cwd, sessionId: 'a', home, env: {} });
+    assert.equal(api.seen.length, 2, 'asked again, not served from the cache');
+    reply = ok({ status: 'unavailable', context: 'junk', items: [] });
+    assert.equal(await cloudRetrieve({ question: QUESTION, cwd, sessionId: 'a', home, env: {} }), null, 'unavailable without rules: as before');
+  } finally { await api.close(); }
+});
+
+test('UserPromptSubmit, cloud unavailable with rules: rules first, then the local recall (Claude Code and Codex)', async () => {
+  let reply = UNAVAIL_RULES();
+  const api = await fakeApi(() => reply), local = await fakeLocal();
+  try {
+    const home = cloudHome({ api: api.url }), work = workdir();
+    const env = hookEnv(home, work, api.url, local.url);
+    const cc = JSON.parse((await runHook(PROMPT_HOOK, input({ cwd: work }), env)).out);
+    assert.equal(cc.hookSpecificOutput.additionalContext, `${RULES}\nLOCAL: metric units.\nSpookling session: sess-1`);
+    assert.deepEqual(shownIds(home, 'sess-1'), ['rule:r_1@1']);
+    const cx = JSON.parse((await runHook(CODEX_HOOK, { hook_event_name: 'UserPromptSubmit', session_id: 'cx9', cwd: work, prompt: QUESTION, transcript_path: '/chat.jsonl' }, env)).out);
+    assert.equal(cx.hookSpecificOutput.additionalContext, `${RULES}\nLOCAL: metric units.`);
+    assert.deepEqual(shownIds(home, 'cx9'), ['rule:r_1@1']);
+    // local server down too: the rules alone
+    const down = { ...env, SPOOKLING_MEMORY_URL: 'http://127.0.0.1:9' };
+    const c2 = JSON.parse((await runHook(CODEX_HOOK, { hook_event_name: 'UserPromptSubmit', session_id: 'cx8', cwd: work, prompt: QUESTION, transcript_path: '/chat.jsonl' }, down)).out);
+    assert.equal(c2.hookSpecificOutput.additionalContext, RULES);
+    // unavailable without rules: the local answer alone, unchanged
+    reply = ok({ status: 'unavailable' });
+    const plain = JSON.parse((await runHook(PROMPT_HOOK, input({ cwd: work, session_id: 'sess-2' }), env)).out);
+    assert.equal(plain.hookSpecificOutput.additionalContext, 'LOCAL: metric units.\nSpookling session: sess-2');
+  } finally { await api.close(); await local.close(); }
+});
+
 // ---------------------------------------------------------------- the wizard's first question, with fake prompts
 
 const answer = (map) => setFeed(({ kind, q }) => {

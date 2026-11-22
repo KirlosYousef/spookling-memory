@@ -15,13 +15,14 @@ const sessionLine = (p) => {
     return `Spookling session: ${p.session_id}`; // the id only: the tools are not advertised on every prompt
   } catch { return ''; }
 };
+let rulesBlock = ''; // the cloud's project rules when its memory answer was unavailable: they go first, before any local recall
 const withSession = (body, p) => {
   const line = sessionLine(p);
-  if (!line) return body;
+  if (!line && !rulesBlock) return body;
   try {
     const o = body ? JSON.parse(body) : {};
     const h = o.hookSpecificOutput || { hookEventName: 'UserPromptSubmit' };
-    h.additionalContext = h.additionalContext ? `${h.additionalContext}\n${line}` : line;
+    h.additionalContext = [rulesBlock, h.additionalContext, line].filter(Boolean).join('\n');
     return JSON.stringify({ ...o, hookSpecificOutput: h });
   } catch { return body; }
 };
@@ -47,7 +48,8 @@ process.stdin.on('end', async () => {
   try { p = JSON.parse(input) || {}; } catch {}
   try {
     const r = typeof p.prompt === 'string' && await require('./cloud.cjs').retrieve(p);
-    if (r) return emitCloud(p, r);
+    if (r && r.rulesOnly) rulesBlock = r.context;
+    else if (r) return emitCloud(p, r);
   } catch { /* the local path below */ }
   try {
     const req = http.request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, timeout: CONNECT_MS }, (res) => {
