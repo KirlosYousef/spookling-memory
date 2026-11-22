@@ -31,7 +31,7 @@ function updateIn({ cloudSessionStart = true, codex = false, claude = true } = {
   `;
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8', timeout: 150000, cwd: home,
-    env: { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, CLAUDE_CONFIG_DIR: join(home, 'claude'), CODEX_HOME: join(home, 'codex'), NO_COLOR: '1', OPENROUTER_API_KEY: 'sk-test' },
+    env: { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, APPDATA: join(home, 'AppData', 'Roaming'), XDG_CONFIG_HOME: join(home, '.config'), CLAUDE_CONFIG_DIR: join(home, 'claude'), CODEX_HOME: join(home, 'codex'), NO_COLOR: '1', OPENROUTER_API_KEY: 'sk-test' },
   });
   const m = /RESULT (.*)/.exec(r.stdout);
   assert.ok(m, r.stdout + r.stderr);
@@ -110,7 +110,7 @@ function updateAll({ deleteB = false } = {}) {
   `;
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8', timeout: 400000, cwd: elsewhere,
-    env: { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, CLAUDE_CONFIG_DIR: join(home, 'claude'), CODEX_HOME: join(home, 'codex'), NO_COLOR: '1', OPENROUTER_API_KEY: 'sk-test' },
+    env: { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, APPDATA: join(home, 'AppData', 'Roaming'), XDG_CONFIG_HOME: join(home, '.config'), CLAUDE_CONFIG_DIR: join(home, 'claude'), CODEX_HOME: join(home, 'codex'), NO_COLOR: '1', OPENROUTER_API_KEY: 'sk-test' },
   });
   const m = /RESULT (.*)/.exec(r.stdout);
   assert.ok(m, r.stdout + r.stderr);
