@@ -1,6 +1,6 @@
 # Spookling Memory
 
-*Algorithm v2.1 · `spookling` 0.2.3 · November 2026*
+*Algorithm v2.1 · `spookling` 0.2.4 · November 2026*
 
 **Your AI forgets you every session. It brings back the car you sold. It drops your rules the moment the chat gets long.**
 
@@ -245,7 +245,7 @@ Behind each number: the result file, the judge logs, both judges' verdicts, the 
 
 In Codex, the pixel ghost shows in the hook messages: `ready` after a successful server health check, with the messages, facts and standing rules the server holds beside it; `active` after successful recall, green, with what was recalled (a search with no matching facts is one `active` line, not a ghost). Failed health checks or recall show the `degraded` ghost and do not block Codex. This is a hook indicator, not a permanent widget; [setup and removal](cli/README.md#codex) use the same local server and `.memory/` data. In Claude Code the same ghost is the status line.
 
-Spookling Memory is out as `spookling` 0.2.3, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
+Spookling Memory is out as `spookling` 0.2.4, early access. Claude Code and Codex use native hooks; the Spookling app follows. A `.memory/` folder, one plugin, the reader your harness already runs, and a tagger you pick. New in 0.2.0: team memory. After `spookling login`, your sessions upload privately, you can share one or a whole project with an org, and your agent can read what colleagues shared. It is opt-in; without a login nothing changes. [Team memory](#team-memory).
 
 New in 0.2.1: turns are saved before any model is called, so a tagger key that runs out or stops working no longer loses a chat ([When the tagger key stops working](#when-the-tagger-key-stops-working)); every assistant reply in a turn is logged, not only the last one; turns can be up to 16,000 characters; `spookling backfill` puts back turns missing from `.memory/`; and `spookling delete` (or `memory_delete` from chat) removes uploaded sessions from the cloud.
 
@@ -359,7 +359,7 @@ From 0.2 on, `spookling update` is the way to upgrade. 0.1.x has no `update` com
 `update` asks the npm registry for the latest `spookling`, then runs that version's own `npx --yes spookling@<version> init --update`: the init steps again, with no questions.
 
 - **What it repeats:** what is already wired (Claude Code and/or Codex, project and/or user scope, the ghost on or off, the tagger, whether the server runs). It reads that from `~/.spookling/install.json` (written, mode `0600`, after every successful `init`) and from the hooks, MCP entries and server actually on disk.
-- **Outside a wired project:** it updates your user scope only and names the project installs it knows about.
+- **Every install, from anywhere:** it rewires every install recorded in `install.json`, user scope and each project folder (a project folder that is your home folder counts as its own install), Claude Code and Codex, wherever you run it. A recorded folder that is gone, or whose Spookling files are gone, is skipped with a line saying so. Only Spookling's own entries change.
 - **The running server:** one still running from an older version folder is stopped (only when its command line shows it is ours) and started again from the new one.
 - **Old versions:** their folders are never deleted. It prints `Old version kept in ~/.spookling-memory/<old> (safe to delete once you're happy).`
 - **Afterwards:** restart open Claude Code and Codex sessions.
