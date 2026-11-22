@@ -12,7 +12,7 @@ import { flyOnce } from './ghost.js';
 import { ALLOW_SHARE_QUESTION, forgetAdded, pendingShareRules, recordAdded, addedRules, setShareDeclined, shareDeclined } from './allow-share.js';
 import { stage } from './stage.js';
 import {
-  HOOK_FILES, CLOUD_HOOK_FILES, MCP_NAME, addHooks, addMcp, addPermissions, claudeDesktopConfigPath, commandsPath, hasPermissions, isOurShareCommand, removePermissions, shareCommand, SHARE_TOOLS, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
+  HOOK_FILES, CLOUD_HOOK_FILES, MCP_NAME, isOurs, addHooks, addMcp, addPermissions, claudeDesktopConfigPath, commandsPath, hasPermissions, isOurShareCommand, removePermissions, shareCommand, SHARE_TOOLS, hookHandlers, mcpEntry, mcpPath, readJson, removeHooks, removeMcp, settingsPath,
   wiring, wslShare, CODEX_EVENTS, codexHandlers, codexHooksPath, STATUS_FILE, addStatusLine, removeStatusLine, isOurStatus,
   addCodexMcp, codexConfigPath, codexEntry, codexMcpEntry, codexMcpToml, installVersions, mcpCommand, ourHookCommands, removeCodexMcp,
 } from './hooks.js';
@@ -881,8 +881,15 @@ async function stepWire(ctx) {
     info('The ghost appears in hook activity; ready/active messages follow successful server checks or recall.');
   }
   else {
-    const handlers = hookHandlers(HOOKS_DIR, undefined, { cloud: ctx.mode === 'cloud' }), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
-    for (const f of [...new Set(Object.values(claudeHookFiles(ctx.mode === 'cloud'))), 'cloud.cjs', 'pulse.js', STATUS_FILE]) {
+    // An update rewires every hook already there, whatever mode install.json records: a SessionStart a cloud install added
+    // stays wired (and is moved to this version) even when this record has no mode. Nothing is added that was not there.
+    let hadSessionStart = false;
+    if (ctx.auto && !ctx.dry) {
+      try { hadSessionStart = (readJson(settingsPath(project, scope)).hooks?.SessionStart ?? []).some((g) => (g?.hooks ?? []).some(isOurs)); } catch { /* mergeFile reports it */ }
+    }
+    const withSession = ctx.mode === 'cloud' || hadSessionStart;
+    const handlers = hookHandlers(HOOKS_DIR, undefined, { cloud: withSession }), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
+    for (const f of [...new Set(Object.values(claudeHookFiles(withSession))), 'cloud.cjs', 'pulse.js', STATUS_FILE]) {
       if (!existsSync(join(hooksAt, f))) {
         warn(`${join(hooksAt, f)} is missing; Claude Code will report it on each event.`);
         await fail(ctx, `hook script ${f} missing`);
@@ -894,7 +901,7 @@ async function stepWire(ctx) {
     let line = '';
     try { line = ghost ? addStatusLine(ctx.dry ? {} : readJson(sp), HOOKS_DIR).statusLine : ''; } catch {} // mergeFile reports it
     await mergeFile(ctx, sp, (s) => (ghost ? addStatusLine(addHooks(s, handlers), HOOKS_DIR) : addHooks(s, handlers)), {
-      what: `hooks: ${ctx.mode === 'cloud' ? 'SessionStart, ' : ''}PreCompact, UserPromptSubmit, Stop, SessionEnd${ghost ? '; the ghost in the status line' : ''}`,
+      what: `hooks: ${withSession ? 'SessionStart, ' : ''}PreCompact, UserPromptSubmit, Stop, SessionEnd${ghost ? '; the ghost in the status line' : ''}`,
       preview: `${hooksJson(handlers)}${line ? `\n"statusLine": ${JSON.stringify(line, null, 2)}` : ''}\n  merged in; nothing else in the file changes`
         + (line && / --then /.test(line.command) ? '\n  your status line stays first; uninstall puts it back as it was' : ''),
       same: `${rel(ctx, sp)} already has the hooks${ghost ? ' and the ghost' : ''}`,
