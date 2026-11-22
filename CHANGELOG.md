@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.4 (2026-11-22)
+## 0.2.4 (22 Nov 2026)
 
 - `spookling update` now rewires every Spookling install on the machine, including project folders and a cloud SessionStart hook, so no session keeps running an old version. Before, it only rewired your user files and the folder you ran it from. A project folder you had set up earlier (its `.mcp.json`, `.claude/settings.json`, `.codex/hooks.json` and `.codex/config.toml`) kept pointing at the old version, and a stale `.mcp.json` in your home folder overrode the new MCP entry for every session under it, so the new tools were missing. Now one `spookling update` (or `init --update`) rewires every install listed in `~/.spookling/install.json`, wherever you run it from. A project folder that no longer exists, or whose Spookling files are gone, is skipped with one line and not recreated. Only Spookling's own entries change; your other hooks, servers and settings stay as they are, and nothing is added that was not there. A problem with one install no longer stops the others from being updated.
 - A cloud SessionStart hook added by an earlier cloud-mode install is rewired on update even when the install record has no mode, instead of staying on an old version folder.
