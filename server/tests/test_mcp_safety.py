@@ -54,6 +54,12 @@ class _Tools:
     async def memory_delete(self, session_id=None, all=False, ctx=None):
         return await self._go("memory_delete", {"session_id": session_id, "all": all}, ctx)
 
+    async def project_rule_set(self, text, replaces_rule_id="", org="", ctx=None):
+        return await self._go("project_rule_set", {"text": text, "replaces_rule_id": replaces_rule_id, "org": org}, ctx)
+
+    async def project_rule_remove(self, rule_id, org="", ctx=None):
+        return await self._go("project_rule_remove", {"rule_id": rule_id, "org": org}, ctx)
+
 
 T = _Tools()
 
@@ -166,6 +172,14 @@ def team(n, a):
         o = ("o2", "Beta") if a.get("org") in ("o2", "beta", "Beta") else ("o1", "Acme")
         t = {"orgId": o[0], "orgName": o[1]}
         return {**t, "count": 7} if a["kind"] == "project" else {**t, "title": "Fix the login bug", "project": "shop", "sessionId": a.get("sessionId") or "cur1"}
+    if n == "rules-get":
+        if os.environ.get("SEVERAL") and not a.get("org"):
+            return {"error": "several orgs", "needOrg": True, "orgs": [{"id": "o1", "name": "Acme"}, {"id": "o2", "name": "Beta"}]}
+        o = ("o2", "Beta") if a.get("org") in ("o2", "beta", "Beta") else ("o1", "Acme")
+        return {"orgId": o[0], "orgName": o[1], "project": "shop", "projectKey": "dir:shop", "removed": [],
+                "rules": [{"id": "r_1", "text": "Use MVVM.", "version": 3, "status": "active"}]}
+    if n in ("rules-set", "rules-remove"):
+        return {"ok": True, "did": n, "args": a, "rule": {"id": a.get("replaces") or a.get("ruleId") or "r_new", "text": a.get("text", "Use MVVM.")}}
     return {"ok": True, "did": n, "args": a}
 
 M._team = team
@@ -182,7 +196,13 @@ TOOLS = {
     "memory_autoshare": ({"project": "shop", "org": "acme", "backfill": True}, {"project": "shop", "backfill": True}, "autoshare",
                          "spookling autoshare shop on --org Acme --backfill", "7 session"),
     "memory_delete": ({"session_id": "sid1"}, {"session_id": "sid1"}, "delete", "spookling delete sid1", "'sid1'"),
+    "project_rule_set": ({"text": "Use tabs.", "org": "acme"}, {"text": "Use tabs."}, "rules-set", "spookling rules set 'Use tabs.' --org Acme", "Use tabs."),
+    "project_rule_remove": ({"rule_id": "r_1", "org": "acme"}, {"rule_id": "r_1"}, "rules-remove", "spookling rules remove r_1 --org Acme", "Use MVVM."),
 }
+SEVERAL_TOOLS = ["memory_share", "memory_autoshare", "project_rule_set", "project_rule_remove"]
+ORG_KEY = {"project_rule_set": '"orgId": "o2"', "project_rule_remove": '"orgId": "o2"'}  # the key the write carries; others use "org"
+NO_ORG_CMD = {"memory_share": "spookling share sid1", "memory_autoshare": "spookling autoshare shop on --org <org>",
+              "project_rule_set": "spookling rules set 'Use tabs.'", "project_rule_remove": "spookling rules remove r_1"}
 
 
 def stdio_call(protocol, caps, answer, tool, args, several=False):
@@ -325,18 +345,18 @@ def _pick_then_confirm(choice):
 
 
 @pytest.mark.parametrize("protocol", PROTOCOLS)
-@pytest.mark.parametrize("tool", ["memory_share", "memory_autoshare"])
+@pytest.mark.parametrize("tool", SEVERAL_TOOLS)
 def test_several_orgs_ask_which_one_then_confirm_for_that_org(protocol, tool):
     _, args, did, _, _ = TOOLS[tool]
     asked, schemas, text, err, _ = stdio_call(protocol, FORM, _pick_then_confirm("Beta"), tool, args, several=True)
     assert len(asked) == 2 and "Which one" in asked[0] and "org" in schemas[0]["properties"]
     assert set(schemas[0]["properties"]["org"].get("enum", [])) == {"Acme", "Beta"}
     assert "'Beta'" in asked[1] and "Acme" not in asked[1] and "confirm" in schemas[1]["properties"]
-    assert not err and f'"did": "{did}"' in text and '"org": "o2"' in text
+    assert not err and f'"did": "{did}"' in text and ORG_KEY.get(tool, '"org": "o2"') in text
 
 
 @pytest.mark.parametrize("protocol", PROTOCOLS)
-@pytest.mark.parametrize("tool", ["memory_share", "memory_autoshare"])
+@pytest.mark.parametrize("tool", SEVERAL_TOOLS)
 def test_several_orgs_picked_but_not_confirmed_does_nothing(protocol, tool):
     _, args, _, _, _ = TOOLS[tool]
 
@@ -348,7 +368,7 @@ def test_several_orgs_picked_but_not_confirmed_does_nothing(protocol, tool):
 
 
 @pytest.mark.parametrize("protocol", PROTOCOLS)
-@pytest.mark.parametrize("tool", ["memory_share", "memory_autoshare"])
+@pytest.mark.parametrize("tool", SEVERAL_TOOLS)
 @pytest.mark.parametrize("result", [{"action": "cancel"}, {"action": "decline"}], ids=["cancel", "decline"])
 def test_several_orgs_cancelled_pick_never_guesses_and_asks_nothing_more(protocol, tool, result):
     _, args, _, _, _ = TOOLS[tool]
@@ -357,11 +377,11 @@ def test_several_orgs_cancelled_pick_never_guesses_and_asks_nothing_more(protoco
 
 
 @pytest.mark.parametrize("protocol", PROTOCOLS)
-@pytest.mark.parametrize("tool", ["memory_share", "memory_autoshare"])
+@pytest.mark.parametrize("tool", SEVERAL_TOOLS)
 def test_several_orgs_and_no_dialog_hand_over_a_command_that_asks_which_org(protocol, tool):
     _, args, _, _, _ = TOOLS[tool]
     asked, _, text, err, _ = stdio_call(protocol, {}, reply(ACCEPT), tool, args, several=True)
-    cmd = "spookling share sid1" if tool == "memory_share" else "spookling autoshare shop on --org <org>"
+    cmd = NO_ORG_CMD[tool]
     assert asked == [] and not err and cmd in text and '"did"' not in text and "--org Acme" not in text
 
 
@@ -755,7 +775,7 @@ def test_rule_set_asks_naming_project_org_and_text_then_writes_on_yes(rules_team
     _, calls = rules_team
     monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-9")
     ctx = Ctx(Res("accept", True))
-    out = run(M.project_rule_set("Write  tests\nfor every bug fix.", "", "", ctx))
+    out = run(T.project_rule_set("Write  tests\nfor every bug fix.", "", "", ctx))
     assert out["ok"] is True and "Rule set" in out["message"]
     msg = ctx.asked[0]
     assert "'shop'" in msg and "'Acme'" in msg and "Write tests for every bug fix." in msg
@@ -766,7 +786,7 @@ def test_rule_set_asks_naming_project_org_and_text_then_writes_on_yes(rules_team
 def test_rule_replace_shows_old_and_new_and_sends_the_version_shown(rules_team):
     _, calls = rules_team
     ctx = Ctx(Res("accept", True))
-    run(M.project_rule_set("Use MVI for all UI code.", "r_1", "", ctx))
+    run(T.project_rule_set("Use MVI for all UI code.", "r_1", "", ctx))
     assert "Old: Use MVVM for all UI code." in ctx.asked[0] and "New: Use MVI for all UI code." in ctx.asked[0]
     assert rule_writes(calls)[0][1]["replaces"] == "r_1" and rule_writes(calls)[0][1]["expectedVersion"] == 2
 
@@ -774,22 +794,22 @@ def test_rule_replace_shows_old_and_new_and_sends_the_version_shown(rules_team):
 @pytest.mark.parametrize("answer", [Res("decline"), Res("cancel"), Res("accept", False), Res("accept")])
 def test_rule_set_and_remove_write_nothing_without_a_clear_yes(rules_team, answer):
     _, calls = rules_team
-    assert run(M.project_rule_set("Use tabs.", "", "", Ctx(answer)))["ok"] is False
-    assert run(M.project_rule_remove("r_1", "", Ctx(answer)))["ok"] is False
+    assert run(T.project_rule_set("Use tabs.", "", "", Ctx(answer)))["ok"] is False
+    assert run(T.project_rule_remove("r_1", "", Ctx(answer)))["ok"] is False
     assert rule_writes(calls) == []
 
 
 def test_no_dialog_hands_over_the_exact_cli_command_and_writes_nothing(rules_team):
     _, calls = rules_team
     for ctx in (Ctx(boom=True), None):
-        out = run(M.project_rule_set("Don't use tabs.", "", "", ctx))
+        out = run(T.project_rule_set("Don't use tabs.", "", "", ctx))
         assert out["ok"] is False and out["needsUserConfirmation"] is True
         assert out["command"] == "spookling rules set 'Don'\"'\"'t use tabs.' --org Acme"
         assert (out["org"], out["project"], out["text"]) == ("Acme", "shop", "Don't use tabs.")
         assert "--yes" not in out["command"] and "exactly as written" in out["message"] and os.getcwd() in out["message"]
-        rep = run(M.project_rule_set("Use MVI.", "r_1", "", ctx))
+        rep = run(T.project_rule_set("Use MVI.", "r_1", "", ctx))
         assert rep["command"] == "spookling rules set 'Use MVI.' --replace r_1 --org Acme" and rep["oldText"] == RULE["text"]
-        rm = run(M.project_rule_remove("r_1", "", ctx))
+        rm = run(T.project_rule_remove("r_1", "", ctx))
         assert rm["command"] == "spookling rules remove r_1 --org Acme" and "Nothing was removed" in rm["message"]
     assert rule_writes(calls) == []
 
@@ -806,7 +826,7 @@ def test_several_orgs_pick_in_a_dialog_and_write_only_to_the_pick(rules_team):
             return Res("accept", True)
 
     ctx = Pick()
-    run(M.project_rule_set("Use tabs.", "", "", ctx))
+    run(T.project_rule_set("Use tabs.", "", "", ctx))
     assert "Which one" in ctx.asked[0] and "'Two'" in ctx.asked[1]
     assert rule_writes(calls)[0][1]["orgId"] == "o2"
 
@@ -814,7 +834,7 @@ def test_several_orgs_pick_in_a_dialog_and_write_only_to_the_pick(rules_team):
 def test_several_orgs_without_a_dialog_hand_over_a_command_that_asks_which_org(rules_team):
     state, calls = rules_team
     state["several"] = True
-    out = run(M.project_rule_set("Use tabs.", "", "", None))
+    out = run(T.project_rule_set("Use tabs.", "", "", None))
     assert out["needsUserConfirmation"] is True and out["command"] == "spookling rules set 'Use tabs.'"
     assert out["orgs"] == ["One", "Two"] and "asks which org" in out["message"]
     assert rule_writes(calls) == []
@@ -823,8 +843,8 @@ def test_several_orgs_without_a_dialog_hand_over_a_command_that_asks_which_org(r
 def test_rule_changed_returns_the_current_text_and_says_ask_again(rules_team):
     state, calls = rules_team
     state["write"] = {"error": "changed", "reason": "rule_changed", "current": {**RULE, "text": "Use MVI.", "version": 3}}
-    for out in (run(M.project_rule_set("Use MVVM everywhere.", "r_1", "", Ctx(Res("accept", True)))),
-                run(M.project_rule_remove("r_1", "", Ctx(Res("accept", True))))):
+    for out in (run(T.project_rule_set("Use MVVM everywhere.", "r_1", "", Ctx(Res("accept", True)))),
+                run(T.project_rule_remove("r_1", "", Ctx(Res("accept", True))))):
         assert out["ok"] is False and out["reason"] == "rule_changed" and out["current"]["text"] == "Use MVI."
         assert "'Use MVI.'" in out["message"] and "ask them again" in out["message"]
 
@@ -832,7 +852,7 @@ def test_rule_changed_returns_the_current_text_and_says_ask_again(rules_team):
 def test_rule_remove_asks_with_the_text_then_removes_with_the_version_shown(rules_team):
     _, calls = rules_team
     ctx = Ctx(Res("accept", True))
-    out = run(M.project_rule_remove("r_1", "", ctx))
+    out = run(T.project_rule_remove("r_1", "", ctx))
     assert out["ok"] is True and RULE["text"] in ctx.asked[0] and "'Acme'" in ctx.asked[0]
     assert rule_writes(calls) == [("rules-remove", {"orgId": "o9", "projectKey": "git:github.com/acme/shop", "ruleId": "r_1", "expectedVersion": 2})]
 
@@ -840,60 +860,46 @@ def test_rule_remove_asks_with_the_text_then_removes_with_the_version_shown(rule
 def test_unknown_rule_ids_and_bad_text_are_refused_without_asking(rules_team):
     _, calls = rules_team
     ctx = Ctx(Res("accept", True))
-    assert "No rule" in run(M.project_rule_set("x", "r_nope", "", ctx))["error"]
-    assert "No active rule" in run(M.project_rule_remove("r_nope", "", ctx))["error"]
-    assert "1 to 300" in run(M.project_rule_set("x" * 301, "", "", ctx))["error"]
-    assert "1 to 300" in run(M.project_rule_set("   ", "", "", ctx))["error"]
+    assert "No rule" in run(T.project_rule_set("x", "r_nope", "", ctx))["error"]
+    assert "No active rule" in run(T.project_rule_remove("r_nope", "", ctx))["error"]
+    assert "1 to 300" in run(T.project_rule_set("x" * 301, "", "", ctx))["error"]
+    assert "1 to 300" in run(T.project_rule_set("   ", "", "", ctx))["error"]
     assert ctx.asked == [] and rule_writes(calls) == []
 
 
-RULES_SERVER = """
-from spookling_memory import mcp as M
-RULE = {"id": "r_1", "text": "Use MVVM.", "version": 1, "status": "active"}
-M._team = lambda n, a: ({"orgId": "o1", "orgName": "Acme", "project": "shop", "projectKey": "dir:shop", "rules": [RULE], "removed": []}
-                        if n == "rules-get" else {"ok": True, "did": n})
-M.server.run("stdio")
-"""
+# ---- project rules over the real stdio harness, both protocols (the in-process tests above cover the lookups and the 409)
 
-
-def stdio_rule(caps, reply, tool="project_rule_set", arguments=None):
-    """Like stdio_call, for the rule tools: a real stdio session. Returns (asked, schemas asked with, tool result text)."""
-    p = subprocess.Popen([sys.executable, "-c", RULES_SERVER], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
-
-    def send(o):
-        p.stdin.write(json.dumps(o) + "\n")
-        p.stdin.flush()
-
-    try:
-        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": "2025-06-18", "capabilities": caps, "clientInfo": {"name": "t", "version": "0"}}})
-        json.loads(p.stdout.readline())
-        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        send({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool, "arguments": arguments or {"text": "Use tabs."}}})
-        asked, schemas = [], []
-        while True:
-            m = json.loads(p.stdout.readline())
-            if m.get("method") == "elicitation/create":
-                asked.append(m["params"]["message"])
-                schemas.append(m["params"].get("requestedSchema"))
-                send({"jsonrpc": "2.0", "id": m["id"], **reply})
-            elif m.get("id") == 2:
-                return asked, schemas, m["result"]["content"][0]["text"]
-    finally:
-        p.kill()
-
-
-def test_rules_over_stdio_accept_writes_and_decline_does_not():
-    asked, schemas, text = stdio_rule({"elicitation": {}}, {"result": {"action": "accept", "content": {"confirm": True}}})
-    assert "Use tabs." in asked[0] and "'Acme'" in asked[0] and '"did": "rules-set"' in text
-    assert list(schemas[0]["properties"]) == ["confirm"]  # the tick box stays (see the report on field-less forms)
-    for result in ({"action": "decline"}, {"action": "cancel"}, {"action": "accept", "content": {"confirm": False}}):
-        asked, _, text = stdio_rule({"elicitation": {}}, {"result": result}, "project_rule_remove", {"rule_id": "r_1"})
-        assert asked and '"did"' not in text and "did not confirm" in text
-
-
-def test_rules_over_stdio_without_elicitation_give_the_command_and_write_nothing():
-    asked, _, text = stdio_rule({}, {"result": {"action": "accept", "content": {"confirm": True}}})
+@pytest.mark.parametrize("protocol", PROTOCOLS)
+def test_rule_replace_shows_old_and_new_and_acts_only_on_yes(protocol):
+    args = {"text": "Use MVI.", "replaces_rule_id": "r_1", "org": "acme"}
+    asked, _, text, err, _ = stdio_call(protocol, FORM, reply(ACCEPT), "project_rule_set", args)
+    assert len(asked) == 1 and "Old: Use MVVM." in asked[0] and "New: Use MVI." in asked[0] and "'shop'" in asked[0] and "'Acme'" in asked[0]
     out = json.loads(text)
-    assert asked == [] and out["needsUserConfirmation"] is True and '"did"' not in text
-    assert out["command"] == "spookling rules set 'Use tabs.' --org Acme"
+    assert not err and out["did"] == "rules-set" and out["args"]["replaces"] == "r_1" and out["args"]["expectedVersion"] == 3
+    for result in ({"action": "decline"}, {"action": "cancel"}, {"action": "accept", "content": {"confirm": False}}):
+        asked, _, text, err, _ = stdio_call(protocol, FORM, reply(result), "project_rule_set", args)
+        assert len(asked) == 1 and not err and '"did"' not in text and "Not set" in text
+    asked, _, text, err, _ = stdio_call(protocol, {}, reply(ACCEPT), "project_rule_set", args)
+    assert asked == [] and not err and '"did"' not in text
+    assert json.loads(text)["command"] == "spookling rules set 'Use MVI.' --replace r_1 --org Acme"
+
+
+@pytest.mark.parametrize("protocol", PROTOCOLS)
+def test_rule_set_and_remove_dialogs_say_project_org_and_rule_and_remove_says_not_removed(protocol):
+    asked, _, text, _, _ = stdio_call(protocol, FORM, reply(ACCEPT), "project_rule_set", {"text": "Use tabs.", "org": "acme"})
+    assert asked == ["Set a project rule (project 'shop', org 'Acme')?\n\nRule: Use tabs.\n\nEvery AI session on this project will be told to follow it."]
+    assert "Rule set for" in json.loads(text)["message"]
+    asked, _, text, _, _ = stdio_call(protocol, FORM, reply(ACCEPT), "project_rule_remove", {"rule_id": "r_1", "org": "acme"})
+    assert asked[0].startswith("Remove a project rule (project 'shop', org 'Acme')?\n\nRule: Use MVVM.")
+    assert json.loads(text)["args"]["expectedVersion"] == 3
+    asked, _, text, _, _ = stdio_call(protocol, FORM, reply({"action": "decline"}), "project_rule_remove", {"rule_id": "r_1"})
+    assert "Not removed" in text and '"did"' not in text
+
+
+@pytest.mark.parametrize("protocol", PROTOCOLS)
+def test_rule_tools_refuse_unknown_ids_and_bad_text_without_asking(protocol):
+    for tool, args, word in (("project_rule_set", {"text": "x", "replaces_rule_id": "r_nope"}, "No rule"),
+                             ("project_rule_remove", {"rule_id": "r_nope"}, "No active rule"),
+                             ("project_rule_set", {"text": "x" * 301}, "1 to 300")):
+        asked, _, text, err, _ = stdio_call(protocol, FORM, reply(ACCEPT), tool, args)
+        assert asked == [] and not err and word in text and '"did"' not in text
