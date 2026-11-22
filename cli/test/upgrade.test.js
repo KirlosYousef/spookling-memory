@@ -73,7 +73,7 @@ test('the upgrade hint: npx for a wiring older than 0.2.0 (no update command the
   assert.equal(upgradeAdvice(['0.1.9', '0.2.1']), 'Run npx spookling@latest init', 'any pre-0.2 reference means the installed command may be old');
   assert.equal(upgradeAdvice(['0.2.0']), 'Run spookling update');
   assert.equal(upgradeAdvice(['0.3.1']), 'Run spookling update');
-  const { out } = statusIn({ hooksVersion: '0.2.5', mcpVersion: '0.2.5', linkVersion: '0.2.5' });
-  assert.match(out, new RegExp(`! upgrade  .* still use 0\\.2\\.5\\. Run spookling update to finish upgrading to ${VERSION.replaceAll('.', '\\.')}\\.`), out);
+  const { out } = statusIn({ hooksVersion: '0.2.1', mcpVersion: '0.2.1', linkVersion: '0.2.1' });
+  assert.match(out, new RegExp(`! upgrade  .* still use 0\\.2\\.1\\. Run spookling update to finish upgrading to ${VERSION.replaceAll('.', '\\.')}\\.`), out);
   assert.doesNotMatch(out, /npx spookling@latest/);
 });
