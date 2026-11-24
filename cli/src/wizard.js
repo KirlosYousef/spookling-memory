@@ -27,6 +27,8 @@ import { createRun, tilde } from './backup.js';
 import { checkToml } from './toml-check.js';
 import { readCache } from './team.js';
 import { liveOrgs } from './share.js';
+import { isJson, reporter } from './report/reporter.js';
+import { checkKey, providerForKey } from './key-check.js';
 
 const WIN = process.platform === 'win32';
 const ROOT = fileURLToPath(new URL('../..', import.meta.url)).replace(/[\\/]$/, '');
@@ -73,13 +75,16 @@ export function codexLogin(env = process.env) {
 }
 
 const ok = (s) => out(`   ${paint(C.MINT, '✓')} ${s}\n`);
-const warn = (s) => out(`   ${paint(C.LILAC, '!')} ${s}\n`);
+const warn = (s) => { reporter().warn(s); out(`   ${paint(C.LILAC, '!')} ${s}\n`); };
 const info = (s) => out(`   ${paint(C.GREY, s)}\n`);
 // a prompt, or its answer when init runs unattended (update): the default unless the caller chose
 const yes = (ctx, q, def = true, auto = def) => (ctx.auto ? Promise.resolve(auto) : confirm(q, def));
-const fail = (ctx, problem) => { ctx.problems.push(problem); return ctx.say(SAY.fail); };
+// code: a CODES key for --json drivers; the message is the same text the human sees
+const fail = (ctx, problem, code = 'INIT_FAILED', extra = {}) => { ctx.problems.push(problem); reporter().error(code, problem, undefined, extra); return ctx.say(SAY.fail); };
+const STEP_IDS = ['checks', 'harness', 'tagger', 'server', 'wire', 'smoke', 'done'];
 
 async function step(ctx, n, line = SAY[n]) {
+  reporter().step(STEP_IDS[n - 1], 'start', STEPS[n - 1]);
   if (ctx.auto) return out(`\n${paint(C.GHOST, `${n}/${STEPS.length}  ${STEPS[n - 1]}`, true)}\n`);
   const w = 28, fill = Math.round((w * n) / STEPS.length);
   out(`\n${paint(C.LILAC, '━'.repeat(fill))}${paint(C.GREY, '─'.repeat(w - fill))}  ${paint(C.GREY, `step ${n} of ${STEPS.length}`)}\n`);
@@ -89,9 +94,9 @@ async function step(ctx, n, line = SAY[n]) {
 
 // keep label short: a wrapped line cannot be redrawn
 async function progress(label, work, done = label) {
-  const tty = process.stdout.isTTY && MODE !== 'none';
+  const tty = process.stdout.isTTY && MODE !== 'none' && !isJson();
   let i = 0;
-  const tick = () => process.stdout.write(`\r   ${paint(C.LILAC, ['•  ', '•• ', '•••', ' ••', '  •', '   '][i++ % 6])} ${label}\x1b[K`);
+  const tick = () => out(`\r   ${paint(C.LILAC, ['•  ', '•• ', '•••', ' ••', '  •', '   '][i++ % 6])} ${label}\x1b[K`);
   const timer = tty ? setInterval(tick, 120) : null;
   if (tty) tick();
   try { return await work; } finally {
@@ -314,6 +319,9 @@ async function runCmd(ctx, cmd, args, { what, show }) {
 }
 const shq = (s) => (/^[\w./:@=-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
+// installers run with their output on stderr under --json, so stdout stays NDJSON
+const installStdio = () => (isJson() ? ['ignore', 2, 2] : 'inherit');
+
 // the official installers; both put claude in ~/.local/bin, like uv's
 export const CLAUDE_INSTALL = WIN
   ? 'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
@@ -328,7 +336,7 @@ export async function claudeCli(ctx, find = () => version('claude')) {
     : 'claude is not on your PATH. Claude Code is what loads these hooks.');
   info(`install it with: ${CLAUDE_INSTALL}`);
   if (await yes(ctx, '   Run that now?', false)) {
-    spawnSync(CLAUDE_INSTALL, { shell: true, stdio: 'inherit' });
+    spawnSync(CLAUDE_INSTALL, { shell: true, stdio: installStdio() });
     process.env.PATH = `${join(homedir(), '.local', 'bin')}${delimiter}${process.env.PATH}`;
     v = find();
   }
@@ -706,6 +714,7 @@ async function stepChecks(ctx) {
   await step(ctx, 1);
   if (Number(process.versions.node.split('.')[0]) < 18) {
     warn(`Node ${process.version} is too old. Spookling Memory needs Node 18 or newer.`);
+    reporter().error('NODE_TOO_OLD', `Node ${process.version} is too old`, 'Install Node 18 or newer');
     await ctx.say(SAY.fail);
     return false;
   }
@@ -719,11 +728,11 @@ async function stepChecks(ctx) {
     warn('uv is not on your PATH. The memory server runs on it.');
     info(`install it with: ${cmd}`);
     if (await yes(ctx, '   Run that now?', false)) {
-      spawnSync(cmd, { shell: true, stdio: 'inherit' });
+      spawnSync(cmd, { shell: true, stdio: installStdio() });
       process.env.PATH = `${join(homedir(), '.local', 'bin')}${delimiter}${process.env.PATH}`;
       uv = version('uv');
     }
-    if (!uv) { warn('Install uv, then run init again.'); await ctx.say(SAY.fail); return false; }
+    if (!uv) { warn('Install uv, then run init again.'); reporter().error('UV_MISSING', 'uv is not installed'); await ctx.say(SAY.fail); return false; }
   }
   if (uv) ok(uv);
   const git = version('git');
@@ -736,9 +745,12 @@ async function stepChecks(ctx) {
 async function stepHarness(ctx) {
   await step(ctx, 2);
   ctx.harness = ctx.auto ? ctx.auto.harness : ['claude', 'codex'][await choose('   Which one?', ['Claude Code', 'Codex'])];
-  ok(ctx.harness === 'claude' ? 'Claude Code' : 'Codex');
+  ok(HARNESS_NAME[ctx.harness]);
+  // the desktop app runs MCP only: it never needs the claude command
   if (ctx.harness === 'claude') ctx.claude = await claudeCli(ctx);
 }
+
+const HARNESS_NAME = { claude: 'Claude Code', codex: 'Codex', 'claude-desktop': 'Claude desktop app' };
 
 export const MODES = ['Log in to Spookling and use your plan (recommended)', 'Enter API keys (as today)'];
 
@@ -761,10 +773,10 @@ async function stepMode(ctx) {
   const who = () => { const c = readCredentials({ home }); return c.token ? (c.user?.email || c.user?.name || c.user?.id || 'saved login') : null; };
   if (ctx.dry) { info('demo: the device login is not run'); return true; }
   if (who()) { ok(`already logged in as ${who()}`); return true; }
-  if (ctx.auto) { warn('Cloud mode needs a login. Run spookling login, then run update again.'); await fail(ctx, 'not logged in'); return true; }
+  if (ctx.auto) { warn('Cloud mode needs a login. Run spookling login, then run update again.'); await fail(ctx, 'not logged in', 'NOT_LOGGED_IN'); return true; }
   const { login } = await import('./account.js');
   const code = await (ctx.login || login)({ home, cwd: ctx.project });
-  if (code !== 0 || !who()) { warn('The login did not finish.'); await fail(ctx, 'cloud login did not finish'); }
+  if (code !== 0 || !who()) { warn('The login did not finish.'); await fail(ctx, 'cloud login did not finish', 'LOGIN_FAILED'); }
   return true;
 }
 
@@ -781,14 +793,24 @@ export async function stepTagger(ctx) {
   if (t.key) {
     const envText = !ctx.dry && existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
     const name = t.key, have = envValue(envText, name);
-    let v = ctx.dry ? undefined : process.env[name];
-    if (v) ok(`${name} found in your environment`);
+    // --json: a key given on stdin (--key-stdin) is the one the user chose, so it wins over the environment
+    const fromStdin = ctx.auto?.keys?.[name];
+    let v = fromStdin || (ctx.dry ? undefined : process.env[name]);
+    if (fromStdin) ok(`${name} received`);
+    else if (v) ok(`${name} found in your environment`);
     else if (have) { ok(`${name} already in .memory/keys.env`); v = have; }
     else if (!ctx.auto && (v = await askHidden(`   ${t.ask}`))) ok(`${name} received`);
     if (!v) {
       warn(`${name} not set. Put it in .memory/keys.env later; the server needs it to tag.`);
-      await fail(ctx, `no ${name}`);
+      await fail(ctx, `no ${name}`, 'MISSING_INPUT', { field: name });
     } else {
+      // --json: a new key is checked before anything is written or wired
+      const checked = ctx.auto?.json && v !== have ? await (ctx.auto.check || checkKey)(name, v) : { ok: true };
+      if (!checked.ok) {
+        warn(checked.message);
+        await fail(ctx, checked.message, checked.code);
+        return;
+      }
       ctx.keys[name] = v;
       if (name === 'ANTHROPIC_API_KEY' && !v.startsWith('sk-ant-')) warn('That key does not start with sk-ant-. Kept as given.');
       if (v === have) ok('.memory/keys.env already up to date');
@@ -823,6 +845,9 @@ export async function stepTagger(ctx) {
   }
 }
 
+// uv sync in the copied server folder: the same call init, update and prepare make
+const syncEngine = () => run('uv', ['sync'], { cwd: SERVER_DIR, timeout: 10 * 60_000 });
+
 // Copy the server out, uv sync, and start (or find) the server.
 async function stepServer(ctx) {
   await step(ctx, 4);
@@ -837,11 +862,11 @@ async function stepServer(ctx) {
   } else if (ctx.auto?.step4Done) {
     ok('server already installed and checked in this run');
   } else if (!(await copyOut(ctx))) {
-    await fail(ctx, `the server is not in ${rel(ctx, INSTALL_DIR)}: let init copy it there`);
+    await fail(ctx, `the server is not in ${rel(ctx, INSTALL_DIR)}: let init copy it there`, 'ENGINE_MISSING');
   } else {
     const label = 'installing the server (uv sync)', done = `uv sync in ${rel(ctx, SERVER_DIR)}`;
     const r = ctx.dry ? (await progress(label, ctx.beat(3000), done), null)
-      : await progress(label, run('uv', ['sync'], { cwd: SERVER_DIR, timeout: 10 * 60_000 }), done);
+      : await progress(label, syncEngine(), done);
     if (ctx.dry) info('demo: skipped');
     else {
       // uv's own summary; the per-package lines only when it failed
@@ -849,7 +874,7 @@ async function stepServer(ctx) {
     }
     if (r && r.status !== 0) {
       warn(r.error ? `uv sync: ${r.error.code ?? r.error.message}` : 'uv sync failed (output above).');
-      await fail(ctx, 'uv sync failed');
+      await fail(ctx, 'uv sync failed', r.error?.code === 'ENOENT' ? 'UV_MISSING' : 'UV_SYNC_FAILED');
     } else {
       if (!ctx.dry) ok('server installed');
       if (ctx.auto) await stopOldServers(ctx);
@@ -871,7 +896,7 @@ async function stepServer(ctx) {
           if (ctx.pid) {
             ok(`started, pid ${ctx.pid}`);
             ctx.written.push(['memory server', `127.0.0.1:${PORT}, pid ${ctx.pid}`]);
-          } else { warn('could not start uv'); await fail(ctx, 'server did not start'); }
+          } else { warn('could not start uv'); await fail(ctx, 'server did not start', 'SERVER_START_FAILED'); }
         }
       } else ctx.skipped.push('starting the server');
     }
@@ -883,6 +908,17 @@ async function stepServer(ctx) {
 async function stepWire(ctx) {
   const { project, scope } = ctx;
   await step(ctx, 5, ctx.harness === 'claude' ? SAY[5] : SAY.codex);
+  if (ctx.harness === 'claude-desktop') {
+    // MCP only: the desktop app loads it at launch from its own config, so no hooks, no settings and no share tools
+    const desktopEntry = mcpEntry(SERVER_DIR, SERVER_URL, ctx.auto?.uv || commandPath('uv'));
+    const desktopPath = claudeDesktopConfigPath();
+    await mergeFile(ctx, desktopPath, (c) => addMcp(c, desktopEntry), {
+      what: `MCP server ${MCP_NAME} for the Claude desktop app`,
+      preview: `${mcpJson(desktopEntry)}\n  merged into Claude's desktop config; other keys stay`,
+      same: `${rel(ctx, desktopPath)} already has the MCP entry`,
+    });
+    return;
+  }
   if (ctx.harness === 'codex') {
     if (!existsSync(join(ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR, 'spookling-codex.cjs'))) await fail(ctx, 'Codex hook script missing');
     const handlers = codexHandlers(HOOKS_DIR), sp = codexHooksPath(project, scope);
@@ -903,7 +939,7 @@ async function stepWire(ctx) {
       try { hadSessionStart = (readJson(settingsPath(project, scope)).hooks?.SessionStart ?? []).some((g) => (g?.hooks ?? []).some(isOurs)); } catch { /* mergeFile reports it */ }
     }
     const withSession = ctx.mode === 'cloud' || hadSessionStart;
-    const handlers = hookHandlers(HOOKS_DIR, undefined, { cloud: withSession }), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
+    const handlers = hookHandlers(HOOKS_DIR, undefined, { cloud: withSession, node: ctx.auto?.node }), hooksAt = ctx.dry ? join(ROOT, 'hooks') : HOOKS_DIR; // the demo copies nothing
     for (const f of [...new Set(Object.values(claudeHookFiles(withSession))), 'cloud.cjs', 'pulse.js', STATUS_FILE]) {
       if (!existsSync(join(hooksAt, f))) {
         warn(`${join(hooksAt, f)} is missing; Claude Code will report it on each event.`);
@@ -924,7 +960,7 @@ async function stepWire(ctx) {
     ctx.ghostOn = !!ghost;
     if (!ghost) info('No ghost in the status line. npx spookling init again adds it.');
     const entry = mcpEntry(SERVER_DIR, SERVER_URL);
-    const desktopEntry = mcpEntry(SERVER_DIR, SERVER_URL, commandPath('uv'));
+    const desktopEntry = mcpEntry(SERVER_DIR, SERVER_URL, ctx.auto?.uv || commandPath('uv'));
     if (scope === 'project') {
       await mergeFile(ctx, mcpPath(project), (c) => addMcp(c, entry), {
         what: `MCP server ${MCP_NAME}`,
@@ -964,7 +1000,7 @@ async function stepAllowShare(ctx, sp) {
   if (have) return ok(`${rel(ctx, sp)} already lets Claude use the share tools`);
   let want = flag;
   if (want === undefined) {
-    const tty = ctx.dry || (process.stdin.isTTY && process.stdout.isTTY);
+    const tty = ctx.dry || (!isJson() && process.stdin.isTTY && process.stdout.isTTY);
     if (!tty) return info('Claude is not allowed to share sessions yet: run init with --allow-share to allow it.');
     if (ctx.auto && shareDeclined(homeOf(ctx))) return;
     // update has no prompts of its own, but this one is a consent, so it is asked
@@ -1016,7 +1052,7 @@ async function smokeCloud(ctx) {
     ctx.serverUp = true;
   } catch (e) {
     warn(e?.status === 401 ? 'The saved login was rejected. Run spookling login, then init again.' : `The cloud did not answer (${e?.code || e?.message || 'error'}). Check your connection.`);
-    await fail(ctx, 'cloud smoke test failed');
+    await fail(ctx, 'cloud smoke test failed', 'SMOKE_FAILED');
   }
 }
 
@@ -1028,7 +1064,7 @@ export async function stepSmoke(ctx) {
   if (ctx.dry) {
     for (let i = 0; i < 3; i++) { await ctx.beat(500); out(paint(C.GREY, '.')); }
     res = { n_events: 0, n_facts: 0, n_rows: 0, reset: null };
-  } else res = await waitForStats(ctx);
+  } else res = await waitForStats(ctx, ctx.auto?.probe ? { probe: ctx.auto.probe } : undefined);
   ctx.serverUp = !!res;
   out('\n');
   const short = (j) => (j.length > 50 ? `${j.slice(0, 49)}…` : j);
@@ -1037,7 +1073,7 @@ export async function stepSmoke(ctx) {
     if (ctx.dry) info('demo: a sample reply');
   } else {
     warn(`${smokeFailure(ctx)}`);
-    await fail(ctx, 'smoke test failed');
+    await fail(ctx, 'smoke test failed', 'SMOKE_FAILED');
   }
 }
 
@@ -1053,6 +1089,9 @@ async function stepDone(ctx, { anim, st }) {
       const desktopMcp = wiring({}, readJson(claudeDesktopConfigPath())).mcp;
       wired = w.events.length === Object.keys(claudeHookFiles(ctx.mode === 'cloud')).length && w.mcp && desktopMcp;
     } catch { wired = false; }
+  }
+  if (ctx.harness === 'claude-desktop' && !ctx.dry) {
+    try { wired = !!wiring({}, readJson(claudeDesktopConfigPath())).mcp; } catch { wired = false; }
   }
   if (ctx.harness === 'codex' && !ctx.dry) {
     try {
@@ -1082,13 +1121,24 @@ async function steps(ctx, { anim, st }) {
   out(`   Setting up Spookling Memory in ${paint(C.GHOST, project)}${scope === 'user' ? paint(C.GREY, ' (hooks and MCP for all your projects)') : ''}\n`);
   info('Every file is shown before it is written. Answer n to skip it.');
 
-  if (!(await stepChecks(ctx))) return 1;
-  await stepHarness(ctx);
-  await stepTagger(ctx);
-  await stepServer(ctx);
-  await stepWire(ctx);
-  await stepSmoke(ctx);
-  return stepDone(ctx, { anim, st });
+  // each stage ends with a step event: ok, or fail when it added a problem (or returned false).
+  // --json stops at the first failed stage: a refused key must not leave the engine copied or the apps wired.
+  const stage = async (id, fn) => {
+    const before = ctx.problems.length;
+    const r = await fn();
+    const failed = r === false || ctx.problems.length > before;
+    reporter().step(id, failed ? 'fail' : 'ok');
+    return { r, failed };
+  };
+  const stop = (f) => ctx.auto?.json && f;
+  const checks = await stage('checks', () => stepChecks(ctx));
+  if (!checks.r || stop(checks.failed)) return 1;
+  if (stop((await stage('harness', () => stepHarness(ctx))).failed)) return 1;
+  if (stop((await stage('tagger', () => stepTagger(ctx))).failed)) return 1;
+  if (stop((await stage('server', () => stepServer(ctx))).failed)) return 1;
+  if (stop((await stage('wire', () => stepWire(ctx))).failed)) return 1;
+  if (stop((await stage('smoke', () => stepSmoke(ctx))).failed)) return 1;
+  return (await stage('done', () => stepDone(ctx, { anim, st }))).r;
 }
 
 // Local files only: the saved login, the team feed cache and the upload queue. No network, so it never hangs.
@@ -1337,7 +1387,8 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
     });
   }
   const p = readPid(project);
-  if (p?.alive && (await confirm(`   Stop the memory server (pid ${p.pid})?`))) {
+  // --json stops the server without asking: removing Spookling means nothing of it keeps running
+  if (p?.alive && (isJson() || (await confirm(`   Stop the memory server (pid ${p.pid})?`)))) {
     if (stopServer(p.pid)) {
       // SIGTERM is graceful (uvicorn closes the store first): wait up to 10 s
       const gone = () => { try { process.kill(p.pid, 0); return false; } catch (e) { return e.code !== 'EPERM'; } };
@@ -1353,4 +1404,108 @@ export async function uninstall(project = process.cwd(), { scope = 'project', ha
   if (installedMode({ cwd: project, home: homeOf(ctx) }) === 'cloud') info('Cloud mode: your login stays (spookling logout signs out); your cloud memory is not touched.');
   out(`\n   Your memory stays in .memory/. Run ${paint(C.GHOST, `npx spookling init${scope === 'user' ? ' --scope user' : ''}`)} to wire it back.\n`);
   return ctx.problems.length ? 1 : 0;
+}
+
+// ---- --json (the Mac app and any script): every answer comes from the flags, nothing is asked ----
+
+// the apps this run can wire: auto means whatever is installed. Claude Code needs its CLI or its folder; the desktop app its config folder.
+export function detectHarnesses({ home = homedir(), find = version } = {}) {
+  const found = [];
+  if (find('claude') || existsSync(join(home, '.claude'))) found.push('claude');
+  if (existsSync(dirname(claudeDesktopConfigPath(home)))) found.push('claude-desktop');
+  if (find('codex') || existsSync(join(home, '.codex'))) found.push('codex');
+  return found;
+}
+
+// one run for every harness in the list: the engine is copied and synced once, the way update does it
+export async function initJson({ home = homedir(), project = process.cwd(), scope = 'user', mode = 'keys', harnesses = ['auto'], tagger = 0, keys = {}, ghost = false, allowShare, node, uv } = {}) {
+  const r = reporter();
+  const wanted = harnesses.includes('auto') ? detectHarnesses({ home }) : [...new Set(harnesses)];
+  if (!wanted.length) {
+    r.error('NO_HARNESS', 'No Claude Code, Claude desktop app or Codex was found.', 'Install one of them, then run again.');
+    r.result(false, { harnesses: [] });
+    return 1;
+  }
+  const run = createRun(home);
+  const shared = { json: true, home, mode: mode === 'cloud' ? 'cloud' : 'keys', tagger, keys, ghost, start: true, allowShare, node, uv, step4Done: false, knownProjects: [] };
+  const done = [];
+  let code = 0;
+  for (const harness of wanted) {
+    Object.assign(shared, { harness });
+    const ctx = { ...newCtx(project, scope), ghost, auto: shared, run };
+    const c = await steps(ctx, { anim: false, st: { live: false, close() {} } });
+    code = Math.max(code, c);
+    done.push({ harness, scope, wired: c === 0, serverUp: !!ctx.serverUp });
+  }
+  if (run.label()) info(run.label());
+  r.result(code === 0, { mode: shared.mode, scope, tagger, harnesses: done, serverUp: done.some((d) => d.serverUp) });
+  return code;
+}
+
+// Is the wiring of each harness actually in its files? A harness counts only if every hook and its MCP entry are there.
+const wiredClaude = (project, home) => ['project', 'user'].some((sc) => {
+  try {
+    const w = wiring(readJson(settingsPath(project, sc, process.env, home)), readJson(mcpPath(project, sc)));
+    return w.events.length >= Object.keys(HOOK_FILES).length && !!w.mcp;
+  } catch { return false; }
+});
+const wiredDesktop = (home) => { try { return !!wiring({}, readJson(claudeDesktopConfigPath(home))).mcp; } catch { return false; } };
+const wiredCodex = (project, home) => ['project', 'user'].some((sc) => {
+  try {
+    const hooks = wiring(readJson(codexHooksPath(project, sc)), {}).events;
+    return CODEX_EVENTS.every((ev) => hooks.includes(ev)) && !!codexMcpEntry(readText(codexConfigPath(project, sc)));
+  } catch { return false; }
+});
+
+// status --json: what is running and wired, from the files and the live server. The plan is "unknown" until the entitlement endpoint exists.
+export async function statusJson({ project = process.cwd(), home = homedir(), get = stats } = {}) {
+  const cloudOn = installedMode({ cwd: project, home }) === 'cloud';
+  const s = (await get()) || (await get(3000));
+  const p = readPid(project);
+  const login = readCredentials({ home });
+  const harnesses = { claude: wiredClaude(project, home), claudeDesktop: wiredDesktop(home), codex: wiredCodex(project, home) };
+  const connected = Object.values(harnesses).some(Boolean);
+  return {
+    version: VERSION,
+    engine: { prepared: existsSync(join(SERVER_DIR, 'pyproject.toml')), dir: INSTALL_DIR },
+    mode: cloudOn ? 'cloud' : 'keys',
+    server: { up: !!s, pid: p?.alive ? p.pid : null },
+    harnesses,
+    login: { loggedIn: !!login.token, user: login.token ? (login.user?.email || login.user?.name || login.user?.id || 'saved login') : null },
+    plan: 'unknown',
+    healthy: (cloudOn || !!s) && connected,
+  };
+}
+
+// serve --foreground: the server in the folder's .memory, its keys read from keys.env, until it stops (for a LaunchAgent)
+export function serveForeground({ folder = process.cwd(), tagger = 0 } = {}) {
+  const dir = resolve(folder);
+  const keysText = readText(join(dir, '.memory', 'keys.env'));
+  const keyEnv = Object.fromEntries([...keysText.matchAll(/^([A-Z_][A-Z0-9_]*)=(.*)$/gm)].map((m) => [m[1], m[2].trim()]));
+  const t = TAGGERS[tagger] ?? TAGGERS[0];
+  const args = ['run', '--project', SERVER_DIR, 'spookling-memory', 'serve', '--folder', '.memory', '--port', String(PORT)];
+  if (t.model) args.push('--model', t.model);
+  if (t.decider) args.push('--decider', t.decider);
+  const child = spawn('uv', args, { cwd: dir, stdio: 'inherit', windowsHide: true, env: { ...process.env, PYTHONUTF8: '1', ...keyEnv } });
+  const forward = (sig) => () => child.kill(sig);
+  process.on('SIGTERM', forward('SIGTERM'));
+  process.on('SIGINT', forward('SIGINT'));
+  return new Promise((res) => child.on('exit', (code, sig) => res(code ?? (sig ? 1 : 0))));
+}
+
+// prepare --json: copy the engine out if it is not there yet, then uv sync. Quick when it is already prepared.
+export async function prepare({ home = homedir() } = {}) {
+  const r = reporter();
+  const ctx = { ...newCtx(home, 'user'), auto: { json: true, home } };
+  r.step('prepare', 'start', 'Preparing');
+  const fail_ = async (msg, code) => { await fail(ctx, msg, code); r.step('prepare', 'fail'); r.result(false, { engine: INSTALL_DIR }); return 1; };
+  if (!existsSync(join(ROOT, 'server', 'pyproject.toml'))) return fail_('The bundled server is missing from this package.', 'ENGINE_MISSING');
+  if (!existsSync(join(SERVER_DIR, 'pyproject.toml')) && !(await copyOut(ctx))) return fail_('Could not copy the server out.', 'ENGINE_MISSING');
+  if (!version('uv')) return fail_('uv is not installed.', 'UV_MISSING');
+  const sync = await progress('installing the server (uv sync)', syncEngine(), `uv sync in ${rel(ctx, SERVER_DIR)}`);
+  if (sync.status !== 0) return fail_(sync.error ? `uv sync: ${sync.error.code ?? sync.error.message}` : 'uv sync failed (output above).', sync.error?.code === 'ENOENT' ? 'UV_MISSING' : 'UV_SYNC_FAILED');
+  linkCli(INSTALL_DIR, home);
+  r.step('prepare', 'ok');
+  r.result(true, { engine: INSTALL_DIR, version: VERSION });
+  return 0;
 }

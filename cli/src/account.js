@@ -309,6 +309,7 @@ async function finishLogin({ data, origin, client, label, home, env, cloud, cwd,
 export async function login({
   home, env = process.env, cloud, label, sleep = delay, openUrl = openBrowser, now = () => Date.now(),
   write = (s) => process.stdout.write(s), cwd, confirm, choose, apiUrl, tty = !!(process.stdin.isTTY && process.stdout.isTTY), confirmOpen,
+  device,
 } = {}) {
   const picked = loginClient({ cloud, env, home, apiUrl, write });
   if (!picked) return 1;
@@ -327,7 +328,10 @@ export async function login({
     say(write, 'The API did not return a verification page.');
     return 1;
   }
-  await showLink({ started, origin, term, openUrl, write, tty, confirmOpen: confirmOpen || term.confirm });
+  // --json (device): the driver shows the code and opens the link itself; nothing is opened here
+  if (device) {
+    device({ userCode: clean(started.userCode || ''), verificationUri: clean(started.verificationUri), expiresIn: Number(started.expiresIn) || 600, trusted: linkTrust(clean(started.verificationUri), origin).kind === 'trusted' });
+  } else await showLink({ started, origin, term, openUrl, write, tty, confirmOpen: confirmOpen || term.confirm });
   const outcome = await pollApproval({ client, started, sleep, now });
   switch (outcome.status) {
     case 'approved':

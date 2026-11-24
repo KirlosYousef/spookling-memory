@@ -4,7 +4,8 @@ import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { frames } from './cutscene.js';
-import { init, initUpdate, status, uninstall } from './wizard.js';
+import { init, initUpdate, serveForeground, status, uninstall } from './wizard.js';
+import { runJson } from './json-commands.js';
 import { update } from './update.js';
 import { restore } from './restore.js';
 import { backfill } from './backfill.js';
@@ -248,6 +249,17 @@ async function route(args, deps) {
     ...Object.fromEntries(Object.entries(deps).filter(([, v]) => typeof v === 'function' || (v && typeof v === 'object' && ('status' in v || 'one' in v)))),
   };
   const cmd = !args[0] || ['-h', '--help'].includes(args[0]) ? 'help' : args[0];
+  const home0 = deps.home || homedir(), cwd0 = deps.cwd || process.cwd();
+  // serve --foreground: the LaunchAgent runs the server here; its output is the server's log, not NDJSON
+  if (cmd === 'serve') {
+    if (!args.includes('--foreground')) usage('usage: spookling serve --foreground [--folder <dir>] [--tagger jev|anthropic|codex]');
+    const named = flag(args, 'tagger', 'takes jev, anthropic or codex') ?? 'jev';
+    const index = { jev: 0, anthropic: 1, codex: 2 }[named];
+    if (index === undefined) usage(`--tagger takes jev, anthropic or codex, not ${named}`);
+    return serveForeground({ folder: flag(args, 'folder', 'takes a folder') ?? cwd0, tagger: index });
+  }
+  // --json: the machine mode the Mac app drives (NDJSON on stdout; nothing is asked)
+  if (args.includes('--json')) return runJson(cmd, args, { home: home0, cwd: cwd0, deps });
   const anim = !args.includes('--no-anim'), fast = args.includes('--fast'), ghost = !args.includes('--no-ghost');
 
   const scope = flag(args, 'scope', 'takes project or user') ?? 'project';

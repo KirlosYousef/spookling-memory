@@ -67,7 +67,10 @@ export function render(cv, text = {}) {
 
 // while the stage is up, writes are kept to print again when the alternate screen closes
 let tape = null;
-export const write = (s) => { tape?.push(s); stdout.write(s); };
+// --json: stdout carries only NDJSON, so the human text goes to stderr instead
+let human = stdout;
+export const setHumanStream = (s) => { human = s; };
+export const write = (s) => { tape?.push(s); human.write(s); };
 export const note = (s) => { tape?.push(s); }; // kept for the log, not shown now
 export const record = (on) => { tape = on ? [] : null; };
 

@@ -34,8 +34,9 @@ export const codexHooksPath = (project, scope = 'project', env = process.env) =>
 
 // exec form (Claude Code v2.1.139+): no shell on any OS, so the path needs no quoting; statusMessage is the spinner's text
 const SPINNER = { UserPromptSubmit: '👻 remembering', PreCompact: '👻 keeping your rules' };
-export const hookHandlers = (hooksDir, p = path, { cloud = false } = {}) => Object.fromEntries(Object.entries(cloud ? { ...HOOK_FILES, ...CLOUD_HOOK_FILES } : HOOK_FILES)
-  .map(([ev, f]) => [ev, { type: 'command', command: 'node', args: [p.join(hooksDir, f)], ...(SPINNER[ev] && { statusMessage: SPINNER[ev] }) }]));
+// node: an absolute path for GUI-launched apps, whose PATH has no node (--node)
+export const hookHandlers = (hooksDir, p = path, { cloud = false, node = 'node' } = {}) => Object.fromEntries(Object.entries(cloud ? { ...HOOK_FILES, ...CLOUD_HOOK_FILES } : HOOK_FILES)
+  .map(([ev, f]) => [ev, { type: 'command', command: node, args: [p.join(hooksDir, f)], ...(SPINNER[ev] && { statusMessage: SPINNER[ev] }) }]));
 
 // \\wsl.localhost\<distro>\... or \\wsl$\<distro>\... -> { distro, path }
 export const wslShare = (dir) => {
