@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.7 (24 Nov 2026)
 
 - Sharing a session works again when the local memory server was not running. `spookling share <id>` used to read only the local log, which the Stop hook fills through that server, so a real session missing from the log was reported as "No session … found here or in the cloud". It now falls back to the agent's own transcript (Claude Code under `~/.claude/projects`, Codex rollouts under `~/.codex/sessions`), uploads from it, then shares. An id found in no log, no transcript and not on the server is still reported as a typo. The installed hooks folder carries the new `transcript.js` too.
 
