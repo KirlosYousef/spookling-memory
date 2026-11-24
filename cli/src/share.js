@@ -7,6 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import { CloudError, apiBase, clean, createCloud, networkMessage } from './cloud.js';
 import { readCredentials, setDefaultOrg } from './credentials.js';
 import { pushFromLog, projectLog, sessionTitle } from './push.js';
+import { transcriptSession } from './transcript.js';
 import { accountScope, readState, takeShareFailures, updateState } from './upload-state.js';
 
 const NOT_LOGGED_IN = 'Not logged in. Run `spookling login`, then try again.';
@@ -338,20 +339,23 @@ export async function setSessionShare({ sessionId, share, org, projectDir = proc
       let project = mine?.project || '';
       let uploadFailed = false;
       if (!mine) {
+        // the local log first (the Stop hook's), else the agent's own transcript: the log has nothing when the local server was down
         const local = localSession(sessionId, { projectDir, home, env });
-        project = projectOf(projectDir, home) || (local ? projectOf(dirname(dirname(local.logPath)), home) : ''); // as the Stop hook names it
-        if (local && local.turns > 0) {
-          const r = await pushFromLog({ logPath: local.logPath, home, env, cloud, project, sessionId, log: () => {} });
+        const tr = local ? null : transcriptSession(sessionId, { env, home });
+        project = projectOf(projectDir, home) || (local ? projectOf(dirname(dirname(local.logPath)), home) : '') || (tr?.cwd ? projectOf(tr.cwd, home) : ''); // as the Stop hook names it
+        const src = local && local.turns > 0 ? { logPath: local.logPath } : tr ? { logText: tr.logText } : null;
+        if (src) {
+          const r = await pushFromLog({ ...src, home, env, cloud, project, sessionId, log: () => {} });
           // a refused upload for this session (offline, 5xx, 401, rate limit) leaves it half sent at best: queue the share, do not apply it
           uploadFailed = !!r?.failed?.some((f) => f.sid === sessionId);
           mine = uploadFailed ? undefined : await onServer().catch(() => undefined);
         }
       }
-      // an id the user typed that is in no local log and not on the server is a typo: queueing it would wait forever
-      if (!mine && explicitId && !localSession(sessionId, { projectDir, home, env })) return { error: `No session ${sessionId} found here or in the cloud. Check the id (it is printed as "Spookling session"), or share the current session without an id.` };
+      // an id the user typed that is in no local log, no transcript and not on the server is a typo: queueing it would wait forever
+      if (!mine && explicitId && !localSession(sessionId, { projectDir, home, env }) && !transcriptSession(sessionId, { env, home })) return { error: `No session ${sessionId} found here or in the cloud. Check the id (it is printed as "Spookling session"), or share the current session without an id.` };
       if (!mine) {
         const o = targets[0];
-        await queueShare(home, env, { sid: sessionId, project, orgId: o.id, org: o.name, title: localSession(sessionId, { projectDir, home, env })?.title || sessionId });
+        await queueShare(home, env, { sid: sessionId, project, orgId: o.id, org: o.name, title: localSession(sessionId, { projectDir, home, env })?.title || transcriptSession(sessionId, { env, home })?.title || sessionId });
         // the Stop hook may have finished its upload (and its share flush) while this ran: look once more, so the job is not left waiting
         if (!uploadFailed && (mine = await onServer().catch(() => undefined))) await dropQueued(home, env, sessionId, o.id);
       }

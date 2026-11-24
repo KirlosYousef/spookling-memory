@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Sharing a session works again when the local memory server was not running. `spookling share <id>` used to read only the local log, which the Stop hook fills through that server, so a real session missing from the log was reported as "No session … found here or in the cloud". It now falls back to the agent's own transcript (Claude Code under `~/.claude/projects`, Codex rollouts under `~/.codex/sessions`), uploads from it, then shares. An id found in no log, no transcript and not on the server is still reported as a typo. The installed hooks folder carries the new `transcript.js` too.
+
 ## 0.2.6 (23 Nov 2026)
 
 - Project rules. Team rules every AI session on a project follows ("Use MVVM for all UI code"), kept in the Spookling cloud per org and project and set only by a person. Typing `/spookling-rules <rule>` in Claude Code saves it at once (typing it is the confirmation); `/spookling-rules replace <id> <text>` changes one and `/spookling-rules remove <id>` removes one; `/spookling-rules` alone lists them. The AI can only check a change and show you the exact line to type: the MCP server has no write path any more. `spookling rules set "<rule>" [--replace <id>]` and `spookling rules remove <id>` at a terminal show the change and ask y/N; `spookling rules history <id>` shows every version. Every change is recorded with its source (`slash` or `cli`) and notified to the team. There is no `--yes`, and without a terminal set and remove refuse and send nothing. A rule changed by someone else meanwhile is never overwritten: you see its current text. `project_rules` joins the allow rule. Known limits of `/spookling-rules`: a backslash followed by a space, or two in a row, fails Claude Code's permission check, so nothing is saved; in auto mode the model may be handed the shell step (it is told not to run it; nothing enforces that); a line equal to `SPOOKLING_RULE_END` in the text ends the input early.
