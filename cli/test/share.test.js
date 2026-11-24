@@ -393,3 +393,54 @@ test('help lists every command in the routing table', async () => {
   const { out } = await runCli(['help'], {});
   for (const c of cmds) assert.ok(out.includes(`spookling ${c}`), `help is missing ${c}`);
 });
+
+// ---- a session the local log never got (local server down): read from the agent's transcript ----
+
+const CID = '46206cfc-baa0-472b-b8fc-5559bdf41afa';
+
+function claudeTranscript(h, cid, cwd) {
+  const dir = join(h, '.claude', 'projects', '-x-Proj');
+  mkdirSync(dir, { recursive: true });
+  const L = (o) => JSON.stringify(o);
+  writeFileSync(join(dir, `${cid}.jsonl`), [
+    L({ type: 'user', cwd, timestamp: '2026-11-23T15:15:21.470Z', message: { role: 'user', content: 'Share this session please' } }),
+    L({ type: 'user', isMeta: true, timestamp: '2026-11-23T15:15:22.000Z', message: { role: 'user', content: 'meta noise' } }),
+    L({ type: 'assistant', timestamp: '2026-11-23T15:15:23.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Sure.' }, { type: 'tool_use', name: 'Bash' }] } }),
+    L({ type: 'user', timestamp: '2026-11-23T15:15:24.000Z', message: { role: 'user', content: [{ type: 'tool_result', content: 'x' }] } }),
+    L({ type: 'assistant', timestamp: '2026-11-23T15:15:25.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } }),
+  ].join('\n'));
+}
+
+test('an explicit id in no log but in the Claude transcript is uploaded from it, then shared', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'other1');
+  claudeTranscript(h, CID, dir);
+  const cloud = storingCloud();
+  const out = await setSessionShare({ sessionId: CID, share: true, projectDir: dir, home: h, env: {}, cloud });
+  assert.equal(out.error, undefined);
+  assert.equal(out.ok, true);
+  assert.equal(out.visibility, 'shared');
+  assert.deepEqual(cloud.calls, [['share', CID, 'o1']]);
+  assert.equal(readState(h, accountScope(h)).cursors[CID], 1); // two turns (seq 0, 1): the user, then both assistant lines merged
+});
+
+test('an explicit id in a Codex rollout is uploaded from it, then shared', async () => {
+  const h = home();
+  const dir = projectWithLog(h, 'other1');
+  const cdir = join(h, '.codex', 'sessions', '2026', '11', '23');
+  mkdirSync(cdir, { recursive: true });
+  const L = (o) => JSON.stringify(o);
+  const msg = (role, type, text, ts) => L({ timestamp: ts, type: 'response_item', payload: { type: 'message', role, content: [{ type, text }] } });
+  writeFileSync(join(cdir, `rollout-2026-11-23T10-00-00-${CID}.jsonl`), [
+    L({ timestamp: '2026-11-23T10:00:00Z', type: 'session_meta', payload: { id: CID, cwd: dir } }),
+    msg('developer', 'input_text', 'sys', '2026-11-23T10:00:01Z'),
+    msg('user', 'input_text', '<environment_context>cwd</environment_context>', '2026-11-23T10:00:02Z'),
+    msg('user', 'input_text', 'Fix the share', '2026-11-23T10:00:03Z'),
+    msg('assistant', 'output_text', 'Fixed.', '2026-11-23T10:00:04Z'),
+  ].join('\n'));
+  const cloud = storingCloud();
+  const out = await setSessionShare({ sessionId: CID, share: true, projectDir: dir, home: h, env: {}, cloud });
+  assert.equal(out.ok, true);
+  assert.equal(out.visibility, 'shared');
+  assert.equal(readState(h, accountScope(h)).cursors[CID], 1);
+});

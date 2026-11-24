@@ -366,7 +366,7 @@ function vendorUploader(from, dir) {
   const lib = join(dir, 'hooks', 'lib');
   mkdirSync(lib, { recursive: true });
   writeFileSync(join(lib, 'package.json'), '{ "type": "module" }\n');
-  for (const f of ['cloud.js', 'version.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js', 'repo-url.js', 'cloud-retrieve.js', 'cloud-retrieve-invoke.js', 'rules.js', 'delete.js']) cpSync(join(src, f), join(lib, f));
+  for (const f of ['cloud.js', 'version.js', 'credentials.js', 'push.js', 'team.js', 'share.js', 'team-invoke.js', 'mask.js', 'upload-state.js', 'repo-url.js', 'cloud-retrieve.js', 'cloud-retrieve-invoke.js', 'rules.js', 'delete.js', 'transcript.js']) cpSync(join(src, f), join(lib, f));
 }
 
 export function install(from, dir) {
